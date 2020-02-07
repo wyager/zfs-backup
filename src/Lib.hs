@@ -17,7 +17,7 @@ import Options.Generic (ParseRecord, ParseField, readField, getRecord)
 import qualified Options.Applicative as Opt
 import Data.Bifunctor (first)
 
-data Error = CommandError ByteString | ZFSListParseError String deriving Show
+data ListError = CommandError ByteString | ZFSListParseError String deriving Show
 
 data Command 
     = List {
@@ -32,12 +32,12 @@ someFunc = do
     command <- getRecord "Tool"
     case command of
         List host -> do
-            listWith $ case host of
+            result <- listWith $ case host of
                     Nothing -> localCmd
                     Just spec -> sshCmd spec
-    print command
+            print result
 
-
+listWith :: P.ProcessConfig () () () -> IO (Either ListError [Object])
 listWith cmd = do
     output <- P.withProcessWait (allOutputs cmd) $ \proc -> do
         bytes <- fmap LBS.toStrict $ atomically $ P.getStdout proc
@@ -45,8 +45,7 @@ listWith cmd = do
         P.waitExitCode proc >>= \case
             ExitSuccess -> return (Right bytes)
             ExitFailure _i -> return $ Left $ CommandError err
-    let result = output >>= first ZFSListParseError . A.parseOnly objects 
-    either print (mapM_ print) result
+    return $ output >>= first ZFSListParseError . A.parseOnly objects 
 
 newtype Size = Size Word64 deriving newtype (Eq, Ord, Show, Num)
 
