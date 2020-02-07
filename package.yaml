@@ -1,0 +1,80 @@
+name:                zfs-backup
+version:             0.1.0.0
+github:              "githubuser/zfs-backup"
+license:             BSD3
+author:              "Author name here"
+maintainer:          "example@example.com"
+copyright:           "2020 Author name here"
+
+extra-source-files:
+- README.md
+- ChangeLog.md
+
+# Metadata used when publishing your package
+# synopsis:            Short description of your package
+# category:            Web
+
+# To avoid duplicated efforts in documentation and dealing with the
+# complications of embedding Haddock markup inside cabal files, it is
+# common to point users to the README.md file.
+description:         Please see the README on GitHub at <https://github.com/githubuser/zfs-backup#readme>
+
+default-extensions:
+- OverloadedLists
+- OverloadedStrings
+- DataKinds
+- TypeOperators
+- MultiParamTypeClasses
+- FlexibleContexts
+- LambdaCase
+- ScopedTypeVariables
+- RecordWildCards
+- NoMonomorphismRestriction
+- DerivingStrategies
+- DeriveGeneric
+- DeriveAnyClass
+- GeneralizedNewtypeDeriving
+- BangPatterns
+- TypeApplications
+
+dependencies:
+- base >= 4.7 && < 5
+- bytestring
+- text
+- containers
+- optparse-applicative
+- optparse-generic
+- time
+- async
+- pipes
+- pipes-safe
+- system-filepath
+- attoparsec
+- typed-process
+- scientific
+- streaming-attoparsec
+
+library:
+  source-dirs: src
+
+executables:
+  zfs-backup-exe:
+    main:                Main.hs
+    source-dirs:         app
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - zfs-backup
+
+tests:
+  zfs-backup-test:
+    main:                Spec.hs
+    source-dirs:         test
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - zfs-backup
