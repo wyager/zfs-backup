@@ -15,6 +15,7 @@ import GHC.Conc (STM, atomically)
 import GHC.Generics (Generic)
 import Options.Generic (ParseRecord, ParseField, readField, getRecord)
 import qualified Options.Applicative as Opt
+import Data.Bifunctor (first)
 
 data Error = CommandError ByteString | ZFSListParseError String deriving Show
 
@@ -28,16 +29,24 @@ data Command
 
 someFunc :: IO ()
 someFunc = do
-    command :: Command <- getRecord "Tool"
+    command <- getRecord "Tool"
+    case command of
+        List host -> do
+            listWith $ case host of
+                    Nothing -> localCmd
+                    Just spec -> sshCmd spec
     print command
-    -- output <- P.withProcessWait (allOutputs localCmd) $ \proc -> do
-    --     bytes <- fmap LBS.toStrict $ atomically $ P.getStdout proc
-    --     err <- fmap LBS.toStrict $ atomically $ P.getStderr proc
-    --     P.waitExitCode proc >>= \case
-    --         ExitSuccess -> return (Right bytes)
-    --         ExitFailure _i -> return $ Left $ CommandError err
-    -- let result = output >>= either (Left . ZFSListParseError) Right . A.parseOnly objects 
-    -- either print (mapM_ print) result
+
+
+listWith cmd = do
+    output <- P.withProcessWait (allOutputs cmd) $ \proc -> do
+        bytes <- fmap LBS.toStrict $ atomically $ P.getStdout proc
+        err <- fmap LBS.toStrict $ atomically $ P.getStderr proc
+        P.waitExitCode proc >>= \case
+            ExitSuccess -> return (Right bytes)
+            ExitFailure _i -> return $ Left $ CommandError err
+    let result = output >>= first ZFSListParseError . A.parseOnly objects 
+    either print (mapM_ print) result
 
 newtype Size = Size Word64 deriving newtype (Eq, Ord, Show, Num)
 
@@ -82,8 +91,14 @@ seconds = posixSecondsToUTCTime . fromIntegral
 class PoolM m where 
     contents :: PoolName -> m [Object]
 
+shellCmd :: String
+shellCmd = "zfs list -Hp -t all -o type,name,creation,guid,referenced,used" 
+
 localCmd :: P.ProcessConfig () () ()
-localCmd = "zfs list -Hp -t all -o type,name,creation,guid,referenced,used" 
+localCmd = P.shell shellCmd
+
+sshCmd :: SSHSpec -> P.ProcessConfig () () ()
+sshCmd spec = P.shell $ "ssh " ++ show spec ++ " " ++ shellCmd
 
 allOutputs :: P.ProcessConfig () () () -> P.ProcessConfig () (STM LBS.ByteString) (STM LBS.ByteString)
 allOutputs command = P.setStdin P.closed $ P.setStdout P.byteStringOutput $ P.setStderr P.byteStringOutput command
@@ -92,10 +107,15 @@ allOutputs command = P.setStdin P.closed $ P.setStdout P.byteStringOutput $ P.se
 data SSHSpec = SSHSpec {
     user :: Maybe ByteString,
     host :: ByteString
-} deriving (Show, Generic)
+} deriving (Generic)
+
+instance Show SSHSpec where
+    show SSHSpec{..} = case user of
+        Nothing -> show host
+        Just user -> show user ++ "@" ++ show host
 
 instance ParseField SSHSpec where
-    readField = Opt.eitherReader (either (Left . ("Parse error: " ++ )) Right . A.parseOnly (sshSpecP <* A.endOfInput) . BS.pack)
+    readField = Opt.eitherReader (first ("Parse error: " ++ ) . A.parseOnly (sshSpecP <* A.endOfInput) . BS.pack)
 
 sshSpecP :: A.Parser SSHSpec
 sshSpecP = do
