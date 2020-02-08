@@ -1,28 +1,41 @@
 module Lib where
 
-import Data.Word (Word64, Word16)
+import Data.Word (Word64)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.Char8 as BS
-import Data.Time.Clock (UTCTime, NominalDiffTime)
+import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import qualified Data.Attoparsec.ByteString as AW
 import Control.Applicative (many, (<|>))
 import qualified System.Process.Typed as P
 import System.Exit (ExitCode(ExitSuccess,ExitFailure))
-import System.IO (Handle)
+-- import System.IO (Handle)
 import GHC.Conc (STM, atomically)
 import GHC.Generics (Generic)
-import Options.Generic (ParseRecord, ParseField, readField, getRecord)
+import Options.Generic (ParseRecord, ParseField, ParseFields, readField, getRecord)
 import qualified Options.Applicative as Opt
 import Data.Bifunctor (first)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
+import qualified Control.Exception as Ex
+import Control.Monad (zipWithM, when)
 
-data ListError = CommandError ByteString | ZFSListParseError String deriving Show
+data ListError = CommandError ByteString | ZFSListParseError String deriving (Show, Ex.Exception)
 
 data Command 
     = List {
         remote :: Maybe SSHSpec
     } 
+    | PlanCopy {
+        srcFS :: FilesystemName,
+        srcRemote :: Maybe SSHSpec,
+        dstFS :: FilesystemName,
+        dstRemote :: Maybe SSHSpec
+    }
     | Foo
     deriving (Generic, ParseRecord, Show)
 
@@ -36,6 +49,16 @@ someFunc = do
                     Nothing -> localCmd
                     Just spec -> sshCmd spec
             print result
+        Foo -> return ()
+        PlanCopy{..} -> do
+            let srcList = maybe localCmd sshCmd srcRemote
+                dstList = maybe localCmd sshCmd dstRemote
+            srcSnaps <- either Ex.throw (return . snapshots) =<< listWith srcList
+            dstSnaps <- either Ex.throw (return . snapshots) =<< listWith dstList
+            case copyPlan srcFS srcSnaps dstFS dstSnaps of
+                Left err -> print err
+                Right plan -> putStrLn (prettyPlan plan)
+
 
 listWith :: P.ProcessConfig () () () -> IO (Either ListError [Object])
 listWith cmd = do
@@ -49,32 +72,61 @@ listWith cmd = do
 
 newtype Size = Size Word64 deriving newtype (Eq, Ord, Show, Num)
 
-newtype ObjName = ObjName ByteString deriving newtype (Eq, Ord, Show)
-
 newtype PoolName = PoolName ByteString deriving newtype (Eq, Ord, Show)
 
 newtype GUID = GUID Word64 deriving newtype (Eq, Ord, Show)
 
-data Type = Filesystem | Volume | Snapshot deriving (Eq, Ord, Show)
+data ObjectMeta = ObjectMeta 
+    { creationOf :: !UTCTime
+    , guidOf :: !GUID
+    , referencedOf :: !Size
+    , usedOf :: !Size
+    } deriving (Eq, Ord, Show)
 
-data Object = Object 
-    { type_ :: !Type
-    , name :: !ObjName
-    , creation :: !UTCTime
-    , guid :: !GUID
-    , referenced :: !Size
-    , used :: !Size
-    } deriving Show
+data Object = Filesystem FilesystemName ObjectMeta
+            | Volume
+            | Snapshot SnapshotName ObjectMeta
+            deriving (Eq, Ord, Show)
+
+
+newtype FilesystemName = FilesystemName ByteString 
+    deriving stock (Eq, Ord, Generic)
+    deriving anyclass ParseRecord
+
+filesystemNameP :: A.Parser FilesystemName
+filesystemNameP = FilesystemName <$> A.takeWhile (not . A.inClass " @\t")
+
+instance Show FilesystemName where
+    show (FilesystemName bs) = BS.unpack bs
+
+instance ParseField FilesystemName where
+    readField = Opt.eitherReader (first ("Parse error: " ++ ) . A.parseOnly (filesystemNameP <* A.endOfInput) . BS.pack)
+deriving anyclass instance ParseFields FilesystemName
+
+data SnapshotName = SnapshotName {snapshotFSOf :: FilesystemName, snapshotNameOf :: ByteString} deriving (Eq,Ord)
+instance Show SnapshotName where
+    show (SnapshotName fs snap) = show fs ++ "@" ++ BS.unpack snap
+
+snapshotNameP :: A.Parser SnapshotName
+snapshotNameP = do
+    snapshotFSOf <- filesystemNameP
+    snapshotNameOf <- "@" *> A.takeWhile (not . A.inClass " \t")
+    return SnapshotName{..}
+
+
+instance ParseField SnapshotName where
+    readField = Opt.eitherReader (first ("Parse error: " ++ ) . A.parseOnly (snapshotNameP <* A.endOfInput) . BS.pack)
+
+
 
 object :: A.Parser Object
-object = Object <$> type_ <*> t name <*> t creation <*> t guid <*> t size <*> t size <* A.endOfLine
+object = (fs <|> vol <|> snap) <* A.endOfLine
     where
+    fs = "filesystem" *> (Filesystem <$> t filesystemNameP <*> t meta)
+    vol = "volume" *> (Volume <$ AW.takeTill A.isEndOfLine)
+    snap = "snapshot" *> (Snapshot <$> t snapshotNameP <*> t meta)
+    meta = ObjectMeta <$> creation <*> t guid <*> t size <*> t size
     t x = A.char '\t' *> x
-    type_ = filesystem <|> snapshot <|> volume
-    filesystem = Filesystem <$ A.string "filesystem"
-    snapshot = Snapshot <$ A.string "snapshot"
-    volume = Volume <$ A.string "volume"
-    name = ObjName <$> A.takeWhile (/= '\t')
     creation = seconds <$> A.decimal
     guid = GUID <$> A.decimal
     size = Size <$> A.decimal
@@ -111,7 +163,7 @@ data SSHSpec = SSHSpec {
 instance Show SSHSpec where
     show SSHSpec{..} = case user of
         Nothing -> show host
-        Just user -> show user ++ "@" ++ show host
+        Just usr -> show usr ++ "@" ++ show host
 
 instance ParseField SSHSpec where
     readField = Opt.eitherReader (first ("Parse error: " ++ ) . A.parseOnly (sshSpecP <* A.endOfInput) . BS.pack)
@@ -123,18 +175,102 @@ sshSpecP = do
     host <- A.takeWhile (not . reserved)
     return SSHSpec{..}
 
+newtype SnapSet = SnapSet {getSnapSet :: Map GUID (Map SnapshotName ObjectMeta)} deriving (Show)
 
--- data Remote a = Remote {
---     ssh :: SSHSpec,
+snapshots :: [Object] -> SnapSet
+snapshots objs = SnapSet $ Map.fromListWith Map.union [(guidOf meta, Map.singleton name meta) | Snapshot name meta <- objs]
+
+
+
+data IncrStep = IncrStep {
+        startGUIDOf :: GUID,
+        startSrcNameOf :: SnapshotName,
+        stopGUIDOf :: GUID,
+        stopSrcNameOf :: SnapshotName
+    }   deriving Show
+
+data CopyPlan
+    = Nada
+    | FullCopy GUID SnapshotName
+    | Incremental {startDstNameOf :: SnapshotName, incrSteps :: [IncrStep]} deriving Show
+
+prettyPlan :: CopyPlan -> String
+prettyPlan Nada = "Do Nothing"
+prettyPlan (FullCopy _ name) = "Full copy: " ++ show name
+prettyPlan (Incremental dstInit steps) = "Incremental copy. Starting from " ++ show dstInit ++ " on dest.\n" ++ concatMap prettyStep steps
+    where 
+    prettyStep (IncrStep _ startName _ stopName) = show startName ++ " -> " ++ show stopName ++ "\n"
+
+withFS :: FilesystemName -> SnapSet -> SnapSet
+withFS fsName (SnapSet snaps) = 
+    SnapSet $ Map.filter (not . null) $ Map.map (Map.filterWithKey relevant) snaps
+    where
+    relevant name _meta = snapshotFSOf name == fsName
+
+
+presentIn :: SnapSet -> SnapSet -> SnapSet
+(SnapSet a) `presentIn` (SnapSet b) = SnapSet (Map.intersection a b)
+
+
+triplets :: SnapSet -> [(GUID, SnapshotName, UTCTime)]
+triplets (SnapSet snaps) = [(guid,name,creationOf meta) | (guid,snaps') <- Map.toList snaps, (name,meta) <- Map.toList snaps']
+
+byDate :: SnapSet -> Map UTCTime (Set (GUID, SnapshotName))
+byDate = Map.fromListWith Set.union . map (\(guid,name,time) -> (time,Set.singleton (guid,name))) . triplets
+
+
+single :: Set (GUID, SnapshotName) -> Either String (GUID, SnapshotName) 
+single snaps = case Set.minView snaps of
+    Nothing -> Left "Error: Zero available matching snaps. Bug?"
+    Just (lowest,others) | null others -> Right lowest
+                      | otherwise -> Left $ "Error: Ambiguity between snaps: " ++ show lowest ++ " " ++ show others
+
+copyPlan :: FilesystemName -> SnapSet -> FilesystemName -> SnapSet -> Either String CopyPlan
+copyPlan srcFS src dstFS dst = 
+    case Map.lookupMax dstByDate of
+            Nothing -> case Map.lookupMax srcByDate  of 
+                Nothing -> Right Nada -- No backups to copy over!
+                Just (_date, srcSnaps) -> do
+                    (guid,name) <- single srcSnaps
+                    Right (FullCopy guid name)                    
+            Just (latestDstDate, dstSnaps) ->  do
+                (latestDstGUID, latestDstName) <- single dstSnaps
+                let toCopy = Map.dropWhileAntitone (< latestDstDate) srcByDate 
+                    inOrder = Map.elems toCopy
+                case inOrder of
+                    [] -> return ()
+                    (initial:_) -> do
+                        (initialGUID,_) <- single initial  
+                        when (latestDstGUID /= initialGUID) (Left "Error: Initial sync GUID mismatch")
+                -- TODO: Ensure starting GUIDs match (use _latestDstGUID)
+                steps <- zipWithM (\as bs -> do
+                    (aGUID,aName) <- single as
+                    (bGUID,bName) <- single bs
+                    Right $ IncrStep aGUID aName bGUID bName)
+                    inOrder 
+                    (tail inOrder)
+                Right $ Incremental latestDstName steps
+    where
+    relevantOnSrc = withFS srcFS src
+    relevantOnDst = withFS dstFS dst `presentIn` relevantOnSrc
+    srcByDate = byDate relevantOnSrc
+    dstByDate = byDate relevantOnDst
+
+
+
+
+-- data Remotable a = Remotable {
+--     ssh :: Maybe SSHSpec,
 --     thing :: a
 -- } deriving Show
 
--- remoteP :: A.Parser a -> A.Parser (Remote a)
--- remoteP a = do
+-- remotableP :: A.Parser a -> A.Parser (Remote a)
+-- remotableP a = do
 --     ssh <- sshSpecP
 --     ":"
 --     thing <- a
 --     return Remote{..}
+
 
 
 
