@@ -67,6 +67,7 @@ executables:
     - -rtsopts
     - -with-rtsopts=-N
     - -Wall -Werror -Wextra
+    - -O2
     dependencies:
     - zfs-backup
 
