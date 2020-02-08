@@ -49,7 +49,7 @@ speedTest = do
     oneStep (const $ return ()) sndProc rcvProc
 
 someFunc :: IO ()
-someFunc = speedTest
+someFunc = runCommand
 
 runCommand :: IO ()
 runCommand = do
@@ -71,6 +71,7 @@ runCommand = do
                     then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan)
                     else executeCopyPlan srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan
 
+-- About 3 GB/sec on my mbp
 oneStep ::  (Int -> IO ()) -> P.ProcessConfig () Handle () ->  P.ProcessConfig Handle () () -> IO ()
 oneStep progress sndProc rcvProc = do
     print sndProc
