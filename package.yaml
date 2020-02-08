@@ -20,7 +20,6 @@ extra-source-files:
 description:         Please see the README on GitHub at <https://github.com/githubuser/zfs-backup#readme>
 
 default-extensions:
-- OverloadedLists
 - OverloadedStrings
 - DataKinds
 - TypeOperators
@@ -54,6 +53,7 @@ dependencies:
 - typed-process
 - scientific
 - streaming-attoparsec
+- formatting
 
 library:
   source-dirs: src

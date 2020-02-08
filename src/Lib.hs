@@ -11,7 +11,7 @@ import qualified Data.Attoparsec.ByteString as AW
 import Control.Applicative (many, (<|>))
 import qualified System.Process.Typed as P
 import System.Exit (ExitCode(ExitSuccess,ExitFailure))
--- import System.IO (Handle)
+import System.IO (Handle)
 import GHC.Conc (STM, atomically)
 import GHC.Generics (Generic)
 import Options.Generic (ParseRecord, ParseField, ParseFields, readField, getRecord)
@@ -23,6 +23,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Control.Exception as Ex
 import Control.Monad (zipWithM, when)
+import Data.List (intercalate)
 
 data ListError = CommandError ByteString | ZFSListParseError String deriving (Show, Ex.Exception)
 
@@ -30,11 +31,14 @@ data Command
     = List {
         remote :: Maybe SSHSpec
     } 
-    | PlanCopy {
+    | Copy {
         srcFS :: FilesystemName,
         srcRemote :: Maybe SSHSpec,
         dstFS :: FilesystemName,
-        dstRemote :: Maybe SSHSpec
+        dstRemote :: Maybe SSHSpec,
+        sendCompressed :: Bool,
+        sendRaw :: Bool,
+        dryRun :: Bool
     }
     | Foo
     deriving (Generic, ParseRecord, Show)
@@ -50,15 +54,54 @@ someFunc = do
                     Just spec -> sshCmd spec
             print result
         Foo -> return ()
-        PlanCopy{..} -> do
+        Copy{..} -> do
             let srcList = maybe localCmd sshCmd srcRemote
                 dstList = maybe localCmd sshCmd dstRemote
             srcSnaps <- either Ex.throw (return . snapshots) =<< listWith srcList
             dstSnaps <- either Ex.throw (return . snapshots) =<< listWith dstList
             case copyPlan srcFS srcSnaps dstFS dstSnaps of
                 Left err -> print err
-                Right plan -> putStrLn (prettyPlan plan)
+                Right plan -> if dryRun
+                    then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan)
+                    else executeCopyPlan srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan
 
+
+oneStep ::  P.ProcessConfig () Handle () ->  P.ProcessConfig Handle () () -> IO ()
+oneStep sndProc rcvProc = do
+    print sndProc
+    print rcvProc
+    P.withProcessWait_ rcvProc $ \rcv ->
+        P.withProcessWait_ sndProc $ \send -> do
+            let sndHdl = P.getStdout send
+            let rcvHdl = P.getStdin rcv
+            let printChunkCount = 100
+            let go !(count::Int) !n = do
+                    chunk <- BS.hGetSome sndHdl 0xFFFF
+                    BS.hPut rcvHdl chunk
+                    let n' = n + BS.length chunk
+                    when (not (BS.null chunk)) $ 
+                        if count == 0
+                            then do
+                                print n'
+                                go printChunkCount 0
+                            else go (count - 1) n'
+            go printChunkCount 0
+
+executeCopyPlan :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions -> CopyPlan -> IO ()
+executeCopyPlan sndSpec rcvSpec sndOpts plan = case plan of
+    Nada -> putStrLn "Nothing to do"
+    FullCopy _guid snap dstFs -> do
+        let (sndExe,sndArgs) = sendCommand sndSpec sndOpts (Left snap)
+        let (rcvExe,rcvArgs) = recCommand rcvSpec dstFs (Left snap)
+        let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ P.proc sndExe sndArgs
+        let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
+        oneStep sndProc rcvProc
+    Incremental start steps -> flip mapM_ steps $ \step -> do
+        let (sndExe,sndArgs) = sendCommand sndSpec sndOpts (Right step)
+        let (rcvExe,rcvArgs) = recCommand rcvSpec (snapshotFSOf start) (Right step)
+        let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ P.proc sndExe sndArgs
+        let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
+        oneStep sndProc rcvProc
 
 listWith :: P.ProcessConfig () () () -> IO (Either ListError [Object])
 listWith cmd = do
@@ -162,8 +205,8 @@ data SSHSpec = SSHSpec {
 
 instance Show SSHSpec where
     show SSHSpec{..} = case user of
-        Nothing -> show host
-        Just usr -> show usr ++ "@" ++ show host
+        Nothing -> BS.unpack host
+        Just usr -> show usr ++ "@" ++ BS.unpack host
 
 instance ParseField SSHSpec where
     readField = Opt.eitherReader (first ("Parse error: " ++ ) . A.parseOnly (sshSpecP <* A.endOfInput) . BS.pack)
@@ -181,6 +224,15 @@ snapshots :: [Object] -> SnapSet
 snapshots objs = SnapSet $ Map.fromListWith Map.union [(guidOf meta, Map.singleton name meta) | Snapshot name meta <- objs]
 
 
+data SendOptions = SendOptions
+    { sendCompressedOpt :: Bool
+    , sendRawOpt :: Bool
+    }
+
+sendOptArgs :: SendOptions -> [String]
+sendOptArgs SendOptions{..} = 
+    if sendCompressedOpt then ["--compressed"] else [] 
+    ++ if sendRawOpt then ["--raw"] else []
 
 data IncrStep = IncrStep {
         startGUIDOf :: GUID,
@@ -189,14 +241,48 @@ data IncrStep = IncrStep {
         stopSrcNameOf :: SnapshotName
     }   deriving Show
 
+sendArgs :: SendOptions -> Either SnapshotName IncrStep -> [String]
+sendArgs opts send = ["send"] ++ sendOptArgs opts ++ case send of
+        Right (IncrStep _ startName _ stopName) -> ["-i", show startName, show stopName]
+        Left snap -> [show snap]
+
+recvArgs :: FilesystemName -> Either SnapshotName IncrStep -> [String]
+recvArgs dstFS send = 
+        let snap =  case send of
+                Right (IncrStep _ _ _ (SnapshotName _fs s)) -> s
+                Left (SnapshotName _fs s) -> s
+        in ["receive", show $ SnapshotName dstFS snap]
+
 data CopyPlan
     = Nada
-    | FullCopy GUID SnapshotName
+    | FullCopy GUID SnapshotName FilesystemName
     | Incremental {startDstNameOf :: SnapshotName, incrSteps :: [IncrStep]} deriving Show
+
+sendCommand :: Maybe SSHSpec -> SendOptions -> Either SnapshotName IncrStep -> (String, [String])
+sendCommand ssh opts snap = case ssh of
+    Nothing -> ("zfs", sendArgs opts snap)
+    Just spec -> ("ssh", [show spec, "zfs"] ++ sendArgs opts snap)
+
+recCommand :: Maybe SSHSpec -> FilesystemName -> Either SnapshotName IncrStep -> (String, [String])
+recCommand ssh dstFs snap = case ssh of 
+    Nothing -> ("zfs", recvArgs dstFs snap)
+    Just spec -> ("ssh", [show spec, "zfs"] ++ recvArgs dstFs snap)
+
+formatCommand :: (String, [String]) -> String
+formatCommand (cmd, args) = intercalate " " (cmd : args)
+
+showShell :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions ->  CopyPlan -> String
+showShell _ _ _ Nada = "true"
+showShell send rcv opts (FullCopy _ snap dstFs) = formatCommand (sendCommand send opts (Left snap)) ++ " | pv | " ++ formatCommand (recCommand rcv dstFs (Left snap))
+showShell send rcv opts (Incremental startDstSnap steps) 
+    = concat $ map (\step -> 
+        formatCommand (sendCommand send opts (Right step)) ++ " | pv | " ++ 
+        formatCommand (recCommand rcv (snapshotFSOf startDstSnap) (Right step)) ++ "\n")
+        steps
 
 prettyPlan :: CopyPlan -> String
 prettyPlan Nada = "Do Nothing"
-prettyPlan (FullCopy _ name) = "Full copy: " ++ show name
+prettyPlan (FullCopy _ name _) = "Full copy: " ++ show name
 prettyPlan (Incremental dstInit steps) = "Incremental copy. Starting from " ++ show dstInit ++ " on dest.\n" ++ concatMap prettyStep steps
     where 
     prettyStep (IncrStep _ startName _ stopName) = show startName ++ " -> " ++ show stopName ++ "\n"
@@ -232,7 +318,7 @@ copyPlan srcFS src dstFS dst =
                 Nothing -> Right Nada -- No backups to copy over!
                 Just (_date, srcSnaps) -> do
                     (guid,name) <- single srcSnaps
-                    Right (FullCopy guid name)                    
+                    Right (FullCopy guid name dstFS)                    
             Just (latestDstDate, dstSnaps) ->  do
                 (latestDstGUID, latestDstName) <- single dstSnaps
                 let toCopy = Map.dropWhileAntitone (< latestDstDate) srcByDate 
