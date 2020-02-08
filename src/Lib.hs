@@ -11,7 +11,7 @@ import qualified Data.Attoparsec.ByteString as AW
 import Control.Applicative (many, (<|>))
 import qualified System.Process.Typed as P
 import System.Exit (ExitCode(ExitSuccess,ExitFailure))
-import System.IO (Handle)
+import System.IO (Handle, hClose)
 import GHC.Conc (STM, atomically)
 import GHC.Generics (Generic)
 import Options.Generic (ParseRecord, ParseField, ParseFields, readField, getRecord)
@@ -40,12 +40,19 @@ data Command
         sendRaw :: Bool,
         dryRun :: Bool
     }
-    | Foo
     deriving (Generic, ParseRecord, Show)
 
+speedTest :: IO ()
+speedTest = do
+    let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ "dd bs=1m if=/dev/zero count=10000"
+    let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ "dd bs=1m of=/dev/null"
+    oneStep (const $ return ()) sndProc rcvProc
 
 someFunc :: IO ()
-someFunc = do
+someFunc = speedTest
+
+runCommand :: IO ()
+runCommand = do
     command <- getRecord "Tool"
     case command of
         List host -> do
@@ -53,7 +60,6 @@ someFunc = do
                     Nothing -> localCmd
                     Just spec -> sshCmd spec
             print result
-        Foo -> return ()
         Copy{..} -> do
             let srcList = maybe localCmd sshCmd srcRemote
                 dstList = maybe localCmd sshCmd dstRemote
@@ -65,27 +71,22 @@ someFunc = do
                     then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan)
                     else executeCopyPlan srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan
 
-
-oneStep ::  P.ProcessConfig () Handle () ->  P.ProcessConfig Handle () () -> IO ()
-oneStep sndProc rcvProc = do
+oneStep ::  (Int -> IO ()) -> P.ProcessConfig () Handle () ->  P.ProcessConfig Handle () () -> IO ()
+oneStep progress sndProc rcvProc = do
     print sndProc
     print rcvProc
     P.withProcessWait_ rcvProc $ \rcv ->
         P.withProcessWait_ sndProc $ \send -> do
             let sndHdl = P.getStdout send
             let rcvHdl = P.getStdin rcv
-            let printChunkCount = 100
-            let go !(count::Int) !n = do
-                    chunk <- BS.hGetSome sndHdl 0xFFFF
+            let go = do
+                    -- hGetSome is faster but maxes out CPU
+                    chunk <- BS.hGet sndHdl 0xFFFF
                     BS.hPut rcvHdl chunk
-                    let n' = n + BS.length chunk
-                    when (not (BS.null chunk)) $ 
-                        if count == 0
-                            then do
-                                print n'
-                                go printChunkCount 0
-                            else go (count - 1) n'
-            go printChunkCount 0
+                    if BS.null chunk
+                        then hClose rcvHdl
+                        else progress (BS.length chunk) >> go
+            go
 
 executeCopyPlan :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions -> CopyPlan -> IO ()
 executeCopyPlan sndSpec rcvSpec sndOpts plan = case plan of
@@ -95,13 +96,13 @@ executeCopyPlan sndSpec rcvSpec sndOpts plan = case plan of
         let (rcvExe,rcvArgs) = recCommand rcvSpec dstFs (Left snap)
         let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ P.proc sndExe sndArgs
         let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
-        oneStep sndProc rcvProc
+        oneStep (const $ return ()) sndProc rcvProc
     Incremental start steps -> flip mapM_ steps $ \step -> do
         let (sndExe,sndArgs) = sendCommand sndSpec sndOpts (Right step)
         let (rcvExe,rcvArgs) = recCommand rcvSpec (snapshotFSOf start) (Right step)
         let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ P.proc sndExe sndArgs
         let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
-        oneStep sndProc rcvProc
+        oneStep (const $ return ()) sndProc rcvProc
 
 listWith :: P.ProcessConfig () () () -> IO (Either ListError [Object])
 listWith cmd = do
