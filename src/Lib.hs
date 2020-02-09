@@ -37,39 +37,12 @@ import Text.Printf (printf)
 import qualified Net.IPv4 as IP4
 import qualified Net.IPv6 as IP6
 import Data.Typeable (Typeable)
+import Data.Ratio ((%))
 
 data ListError = CommandError ByteString | ZFSListParseError String deriving (Show, Ex.Exception)
 
-
-data TimeUnit = Day | Month | Year deriving (Eq,Ord)
-
-
-
--- nominalDiff :: TimeUnit -> NominalDiffTime
--- nominalDiff = 
-
-clipTo :: TimeUnit -> UTCTime -> (UTCTime,UTCTime)
-clipTo unit time = case unit of
-    Day -> let baseline = UTCTime (Clock.utctDay time) 0 in (baseline, Clock.addUTCTime Clock.nominalDay baseline)
-    Month -> let (y,m,_d) = Cal.toGregorian (Clock.utctDay time) 
-                 baseline = Cal.fromGregorian y m 1
-                 end = Cal.fromGregorian y m $ Cal.gregorianMonthLength y m
-             in (UTCTime baseline 0, Clock.addUTCTime Clock.nominalDay (UTCTime end 0))
-    Year -> let (y,_m,_d) = Cal.toGregorian (Clock.utctDay time) 
-                baseline = Cal.fromGregorian y 1 1
-                end = Cal.fromGregorian y 12 31
-            in (UTCTime baseline 0, Clock.addUTCTime Clock.nominalDay (UTCTime end 0))
-
-temporalDiv :: TimeUnit -> UTCTime -> (UTCTime, Rational)
-temporalDiv unit time = (lo, toRational fraction)
-    where
-    (lo,hi) = clipTo unit time
-    elapsed = time `Clock.diffUTCTime` lo
-    maxDur = hi `Clock.diffUTCTime` lo
-    fraction = elapsed / maxDur
-
-bin :: Ord a => Integer -> [(a, Rational, k)] -> Map a (Map Rational k)
-bin bins items = undefined
+data DeleteError = Couldn'tPlan String deriving (Show, Ex.Exception)
+    -- bin time let (base,frac) = temporalDiv unit time in (base, frac, v)) times
 
 
 instance Show TimeUnit where
@@ -81,14 +54,14 @@ instance HasParser TimeUnit where
     parser = Day <$ "day" 
          <|> Month <$ "month" 
          <|> Year <$ ("year" <|> "yr")
-data Period = Period Word TimeUnit
+data Period = Period Integer TimeUnit
 instance Show Period where
     show (Period count unit) = show count ++ "-per-" ++ show unit
 
 instance HasParser Period where
     parser = Period <$> A.decimal <*> ("-per-" *> parser)
 
-data History = History Word Period 
+data History = History Int Period 
 
 instance Show History where
     show (History count period) = show count ++ "@" ++ show period
@@ -154,8 +127,13 @@ runCommand = do
                     then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan)
                     else printProgress $ \update -> executeCopyPlan update srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan
         CleanupSnapshots{..} -> do
-            print mostRecent
-            mapM_ print alsoKeep
+            let list = remotable localCmd sshCmd filesystem
+                -- remote = remotable Nothing Just filesystem
+            snaps <- either Ex.throw (return . snapshots) =<< listWith list
+            plan <- either (Ex.throw . Couldn'tPlan) return $ planDeletion (thing filesystem) snaps (maybe 0 id mostRecent) alsoKeep
+            print plan
+
+-- planDeletion :: FilesystemName -> SnapSet -> Int -> [History] -> Either String DeletePlan
 
 trackProgress :: Int -> (Int -> IO ()) -> ((Int -> IO ()) -> IO a) -> IO a
 trackProgress delay report go = do
@@ -389,22 +367,86 @@ recvArgs dstFS send =
                 Left (SnapshotName _fs s) -> s
         in ["receive", show $ SnapshotName dstFS snap]
 
-data DeletePlan = DeletePlan {delete :: Set SnapshotName, keep :: Set SnapshotName}
+data DeletePlan = DeletePlan {delete :: Set SnapshotName, keep :: Set SnapshotName} deriving Show
+
+
 
 planDeletion :: FilesystemName -> SnapSet -> Int -> [History] -> Either String DeletePlan
 planDeletion fsName snapSet mostRecentN histories = do
     inOrder :: Map UTCTime SnapshotName <- mapM (second snd . single) $ byDate $ withFS fsName snapSet
-    let mostRecent = map snd $ take mostRecentN $ Map.toDescList inOrder
-    undefined
-
-    -- where
-    -- mostRecent :: Set SnapshotName
-    -- mostRecent 
-
+    let mostRecent = Set.fromList $ map snd $ take mostRecentN $ Map.toDescList inOrder
+    let keepHistories = Set.unions $ map (keepHistory inOrder) histories
+    let toKeep = Set.union keepHistories mostRecent
+    let toDelete = (Set.fromList $ Map.elems inOrder) `Set.difference` toKeep
+    return (DeletePlan toDelete toKeep)
 
 
-keepHistory :: Ord a => Map UTCTime a -> History -> Set a
-keepHistory snaps history = undefined
+
+data TimeUnit = Day | Month | Year deriving (Eq,Ord)
+
+
+
+-- nominalDiff :: TimeUnit -> NominalDiffTime
+-- nominalDiff = 
+
+clipTo :: TimeUnit -> UTCTime -> (UTCTime,UTCTime)
+clipTo unit time = case unit of
+    Day -> let baseline = UTCTime (Clock.utctDay time) 0 in (baseline, Clock.addUTCTime Clock.nominalDay baseline)
+    Month -> let (y,m,_d) = Cal.toGregorian (Clock.utctDay time) 
+                 baseline = Cal.fromGregorian y m 1
+                 end = Cal.fromGregorian y m $ Cal.gregorianMonthLength y m
+             in (UTCTime baseline 0, Clock.addUTCTime Clock.nominalDay (UTCTime end 0))
+    Year -> let (y,_m,_d) = Cal.toGregorian (Clock.utctDay time) 
+                baseline = Cal.fromGregorian y 1 1
+                end = Cal.fromGregorian y 12 31
+            in (UTCTime baseline 0, Clock.addUTCTime Clock.nominalDay (UTCTime end 0))
+
+temporalDiv :: TimeUnit -> UTCTime -> (UTCTime, Rational)
+temporalDiv unit time = (lo, toRational fraction)
+    where
+    (lo,hi) = clipTo unit time
+    elapsed = time `Clock.diffUTCTime` lo
+    maxDur = hi `Clock.diffUTCTime` lo
+    fraction = elapsed / maxDur
+
+bin :: Integer -> [(Rational, v)] -> Map Rational (Map Rational v)
+bin bins = foldl insert initial
+    where
+    initial = Map.fromList [(i % bins,Map.empty) | i <- [0..bins-1]]
+    insert acc (rat,v) = 
+        let (lo,at,_) = Map.splitLookup rat acc in
+        let key = maybe (error $ "Invalid rational key: " ++ show rat) id $ ((rat <$ at) <|> (fmap (fst . fst) $ Map.maxViewWithKey lo)) in
+        Map.adjust (Map.insert rat v) key acc
+
+binBy :: forall v . TimeUnit -> Integer -> [(UTCTime, v)] -> Map UTCTime (Map Rational (Map Rational v))
+binBy unit bins times = fmap (bin bins) based
+    where
+    based :: Map UTCTime [(Rational, v)]
+    based = foldl insert Map.empty times
+    insert acc (time,v) = 
+        let (base,frac) = temporalDiv unit time in 
+        let alter = \case
+                Nothing -> Just [(frac,v)]
+                Just others -> Just $ (frac,v):others
+        in
+        Map.alter alter base acc
+
+
+keepHistory :: forall v . (Ord v) => Map UTCTime v -> History -> Set v
+keepHistory snaps (History count (Period frac timeUnit)) = Set.fromList $ take count best
+    where 
+    -- Outer map - "Base time" (e.g. day boundaries if time unit is day)
+    -- Middle map - Start of each bin
+    -- Inner map - actual time
+    binned :: Map UTCTime (Map Rational (Map Rational v))
+    binned = binBy timeUnit frac $ Map.toList snaps
+    best :: [v]
+    best = do
+        (_base, perBase) <- Map.toDescList binned
+        (_frac, perFrac) <- Map.toDescList perBase
+        case Map.maxView perFrac of
+            Nothing -> []
+            Just (v,_) -> [v]
 
 
 data CopyPlan
