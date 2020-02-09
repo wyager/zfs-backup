@@ -54,6 +54,7 @@ dependencies:
 - scientific
 - streaming-attoparsec
 - formatting
+- stm
 
 library:
   source-dirs: src

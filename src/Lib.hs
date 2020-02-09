@@ -12,7 +12,8 @@ import Control.Applicative (many, (<|>))
 import qualified System.Process.Typed as P
 import System.Exit (ExitCode(ExitSuccess,ExitFailure))
 import System.IO (Handle, hClose)
-import GHC.Conc (STM, atomically)
+import Control.Concurrent.STM (STM, atomically)
+import Control.Concurrent (threadDelay)
 import GHC.Generics (Generic)
 import Options.Generic (ParseRecord, ParseField, ParseFields, readField, getRecord)
 import qualified Options.Applicative as Opt
@@ -24,6 +25,9 @@ import qualified Data.Set as Set
 import qualified Control.Exception as Ex
 import Control.Monad (zipWithM, when)
 import Data.List (intercalate)
+import qualified Data.IORef as IORef
+import qualified Control.Concurrent.Async as Async
+import Text.Printf (printf)
 
 data ListError = CommandError ByteString | ZFSListParseError String deriving (Show, Ex.Exception)
 
@@ -43,13 +47,13 @@ data Command
     deriving (Generic, ParseRecord, Show)
 
 speedTest :: IO ()
-speedTest = do
-    let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ "dd bs=1m if=/dev/zero count=10000"
+speedTest = printProgress $ \update -> do
+    let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ "dd bs=1m if=/dev/zero count=30000"
     let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ "dd bs=1m of=/dev/null"
-    oneStep (const $ return ()) sndProc rcvProc
+    oneStep update sndProc rcvProc
 
 someFunc :: IO ()
-someFunc = runCommand
+someFunc = speedTest
 
 runCommand :: IO ()
 runCommand = do
@@ -69,7 +73,42 @@ runCommand = do
                 Left err -> print err
                 Right plan -> if dryRun
                     then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan)
-                    else executeCopyPlan srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan
+                    else printProgress $ \update -> executeCopyPlan update srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan
+
+trackProgress :: Int -> (Int -> IO ()) -> ((Int -> IO ()) -> IO a) -> IO a
+trackProgress delay report go = do
+    counter <- IORef.newIORef 0
+    let update i = IORef.atomicModifyIORef' counter (\c -> (c + i, ()))
+    done <- Async.async (go update)
+    let loop = do
+            timer <- Async.async $ threadDelay delay
+            Async.waitEither done timer >>= \case
+                Left result -> return result
+                Right () -> do
+                    progress <- IORef.atomicModifyIORef' counter (\c -> (0, c))
+                    report progress
+                    loop
+    loop
+
+
+sizeWithUnits :: Integral i => String -> i -> String
+sizeWithUnits unit i = printf "%.1f %s%s" scaled prefix unit
+    where
+    f = fromIntegral i :: Double 
+    thousands = floor (log f / log 1000) :: Word
+    (prefix :: String, divisor :: Double) = case thousands of
+        0 -> ("",  1e0) 
+        1 -> ("k", 1e3)
+        2 -> ("M", 1e6)
+        3 -> ("G", 1e9)
+        _ -> ("T", 1e12)
+    scaled = f / divisor
+
+
+
+printProgress :: ((Int -> IO ()) -> IO a) -> IO a
+printProgress = trackProgress (1000*1000) (putStrLn . sizeWithUnits "B/sec")
+
 
 -- About 3 GB/sec on my mbp
 oneStep ::  (Int -> IO ()) -> P.ProcessConfig () Handle () ->  P.ProcessConfig Handle () () -> IO ()
@@ -81,29 +120,30 @@ oneStep progress sndProc rcvProc = do
             let sndHdl = P.getStdout send
             let rcvHdl = P.getStdin rcv
             let go = do
-                    -- hGetSome is faster but maxes out CPU
-                    chunk <- BS.hGet sndHdl 0xFFFF
+                    -- The actual fastest on my mbp seems to be hGet 0x10000, 
+                    -- but that feels very machine-dependent. Hopefully hGetSome
+                    -- with a bit of room will reliably capture most of the max
+                    -- possible performance. With this, I get around 3GB/sec
+                    chunk <- BS.hGetSome sndHdl 0x20000 
                     BS.hPut rcvHdl chunk
                     if BS.null chunk
                         then hClose rcvHdl
                         else progress (BS.length chunk) >> go
             go
 
-executeCopyPlan :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions -> CopyPlan -> IO ()
-executeCopyPlan sndSpec rcvSpec sndOpts plan = case plan of
+executeCopyPlan :: (Int -> IO ()) -> Maybe SSHSpec -> Maybe SSHSpec -> SendOptions -> CopyPlan -> IO ()
+executeCopyPlan progress sndSpec rcvSpec sndOpts plan = case plan of
     Nada -> putStrLn "Nothing to do"
-    FullCopy _guid snap dstFs -> do
-        let (sndExe,sndArgs) = sendCommand sndSpec sndOpts (Left snap)
-        let (rcvExe,rcvArgs) = recCommand rcvSpec dstFs (Left snap)
+    FullCopy _guid snap dstFs -> goWith (Left snap) dstFs
+    Incremental start steps -> flip mapM_ steps $ \step ->
+        goWith (Right step) (snapshotFSOf start)
+    where
+    goWith step dstFs = do
+        let (sndExe,sndArgs) = sendCommand sndSpec sndOpts step
+        let (rcvExe,rcvArgs) = recCommand rcvSpec dstFs step
         let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ P.proc sndExe sndArgs
         let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
-        oneStep (const $ return ()) sndProc rcvProc
-    Incremental start steps -> flip mapM_ steps $ \step -> do
-        let (sndExe,sndArgs) = sendCommand sndSpec sndOpts (Right step)
-        let (rcvExe,rcvArgs) = recCommand rcvSpec (snapshotFSOf start) (Right step)
-        let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ P.proc sndExe sndArgs
-        let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
-        oneStep (const $ return ()) sndProc rcvProc
+        oneStep progress sndProc rcvProc
 
 listWith :: P.ProcessConfig () () () -> IO (Either ListError [Object])
 listWith cmd = do
