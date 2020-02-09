@@ -36,6 +36,8 @@ default-extensions:
 - BangPatterns
 - TypeApplications
 - StandaloneDeriving
+- DuplicateRecordFields
+- DerivingVia
 
 dependencies:
 - base >= 4.7 && < 5
@@ -55,6 +57,7 @@ dependencies:
 - streaming-attoparsec
 - formatting
 - stm
+- ip
 
 library:
   source-dirs: src

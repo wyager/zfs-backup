@@ -2,12 +2,14 @@ module Lib where
 
 import Data.Word (Word64)
 import Data.ByteString (ByteString)
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.Char8 as BS
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import qualified Data.Attoparsec.ByteString.Char8 as A
-import qualified Data.Attoparsec.ByteString as AW
+import qualified Data.Attoparsec.Text as A
 import Control.Applicative (many, (<|>))
 import qualified System.Process.Typed as P
 import System.Exit (ExitCode(ExitSuccess,ExitFailure))
@@ -15,7 +17,7 @@ import System.IO (Handle, hClose)
 import Control.Concurrent.STM (STM, atomically)
 import Control.Concurrent (threadDelay)
 import GHC.Generics (Generic)
-import Options.Generic (ParseRecord, ParseField, ParseFields, readField, getRecord)
+import Options.Generic (ParseRecord, ParseField, ParseFields, Only(fromOnly), readField, getRecord, parseRecord, type (<?>)(unHelpful))
 import qualified Options.Applicative as Opt
 import Data.Bifunctor (first)
 import Data.Map.Strict (Map)
@@ -28,18 +30,21 @@ import Data.List (intercalate)
 import qualified Data.IORef as IORef
 import qualified Control.Concurrent.Async as Async
 import Text.Printf (printf)
+import qualified Net.IPv4 as IP4
+import qualified Net.IPv6 as IP6
+import Data.Typeable (Typeable)
 
 data ListError = CommandError ByteString | ZFSListParseError String deriving (Show, Ex.Exception)
+
+type RFSDoc x = x <?> "Can be \"tank/set\" or \"user@host:tank/set\""
 
 data Command 
     = List {
         remote :: Maybe SSHSpec
     } 
     | Copy {
-        srcFS :: FilesystemName,
-        srcRemote :: Maybe SSHSpec,
-        dstFS :: FilesystemName,
-        dstRemote :: Maybe SSHSpec,
+        src :: RFSDoc (Remotable FilesystemName),
+        dst :: RFSDoc (Remotable FilesystemName),
         sendCompressed :: Bool,
         sendRaw :: Bool,
         dryRun :: Bool
@@ -65,11 +70,15 @@ runCommand = do
                     Just spec -> sshCmd spec
             print result
         Copy{..} -> do
-            let srcList = maybe localCmd sshCmd srcRemote
-                dstList = maybe localCmd sshCmd dstRemote
+            let src' = unHelpful src
+                dst' = unHelpful dst
+                srcList = remotable localCmd sshCmd src'
+                dstList = remotable localCmd sshCmd dst'
+                srcRemote = remotable Nothing Just src'
+                dstRemote = remotable Nothing Just dst'
             srcSnaps <- either Ex.throw (return . snapshots) =<< listWith srcList
             dstSnaps <- either Ex.throw (return . snapshots) =<< listWith dstList
-            case copyPlan srcFS srcSnaps dstFS dstSnaps of
+            case copyPlan (thing src') srcSnaps (thing dst') dstSnaps of
                 Left err -> print err
                 Right plan -> if dryRun
                     then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan)
@@ -148,10 +157,10 @@ executeCopyPlan progress sndSpec rcvSpec sndOpts plan = case plan of
 listWith :: P.ProcessConfig () () () -> IO (Either ListError [Object])
 listWith cmd = do
     output <- P.withProcessWait (allOutputs cmd) $ \proc -> do
-        bytes <- fmap LBS.toStrict $ atomically $ P.getStdout proc
+        output <- fmap (TE.decodeUtf8 . LBS.toStrict) $ atomically $ P.getStdout proc
         err <- fmap LBS.toStrict $ atomically $ P.getStderr proc
         P.waitExitCode proc >>= \case
-            ExitSuccess -> return (Right bytes)
+            ExitSuccess -> return (Right output)
             ExitFailure _i -> return $ Left $ CommandError err
     return $ output >>= first ZFSListParseError . A.parseOnly objects 
 
@@ -173,43 +182,49 @@ data Object = Filesystem FilesystemName ObjectMeta
             | Snapshot SnapshotName ObjectMeta
             deriving (Eq, Ord, Show)
 
+class HasParser a where
+    parser :: A.Parser a
+newtype WithParser a = WithParser {unWithParser :: a}
+instance (Typeable a, HasParser a) => ParseField (WithParser a) where
+    readField = Opt.eitherReader (first ("Parse error: " ++ ) . A.parseOnly ((WithParser <$> parser) <* A.endOfInput) . T.pack)
 
-newtype FilesystemName = FilesystemName ByteString 
+
+newtype FilesystemName = FilesystemName Text 
     deriving stock (Eq, Ord, Generic)
     deriving anyclass ParseRecord
 
-filesystemNameP :: A.Parser FilesystemName
-filesystemNameP = FilesystemName <$> A.takeWhile (not . A.inClass " @\t")
+
+instance HasParser FilesystemName where
+    parser = FilesystemName <$> A.takeWhile (not . A.inClass " @\t")
+
 
 instance Show FilesystemName where
-    show (FilesystemName bs) = BS.unpack bs
+    show (FilesystemName name) = T.unpack name
 
 instance ParseField FilesystemName where
-    readField = Opt.eitherReader (first ("Parse error: " ++ ) . A.parseOnly (filesystemNameP <* A.endOfInput) . BS.pack)
+    readField = unWithParser <$> readField
 deriving anyclass instance ParseFields FilesystemName
 
-data SnapshotName = SnapshotName {snapshotFSOf :: FilesystemName, snapshotNameOf :: ByteString} deriving (Eq,Ord)
+data SnapshotName = SnapshotName {snapshotFSOf :: FilesystemName, snapshotNameOf :: Text} deriving (Eq,Ord)
 instance Show SnapshotName where
-    show (SnapshotName fs snap) = show fs ++ "@" ++ BS.unpack snap
+    show (SnapshotName fs snap) = show fs ++ "@" ++ T.unpack snap
 
-snapshotNameP :: A.Parser SnapshotName
-snapshotNameP = do
-    snapshotFSOf <- filesystemNameP
-    snapshotNameOf <- "@" *> A.takeWhile (not . A.inClass " \t")
-    return SnapshotName{..}
-
+instance HasParser SnapshotName where
+    parser = do
+        snapshotFSOf <- parser
+        snapshotNameOf <- "@" *> A.takeWhile (not . A.inClass " \t")
+        return SnapshotName{..}
 
 instance ParseField SnapshotName where
-    readField = Opt.eitherReader (first ("Parse error: " ++ ) . A.parseOnly (snapshotNameP <* A.endOfInput) . BS.pack)
-
+    readField = unWithParser <$> readField
 
 
 object :: A.Parser Object
 object = (fs <|> vol <|> snap) <* A.endOfLine
     where
-    fs = "filesystem" *> (Filesystem <$> t filesystemNameP <*> t meta)
-    vol = "volume" *> (Volume <$ AW.takeTill A.isEndOfLine)
-    snap = "snapshot" *> (Snapshot <$> t snapshotNameP <*> t meta)
+    fs = "filesystem" *> (Filesystem <$> t parser <*> t meta)
+    vol = "volume" *> (Volume <$ A.takeTill A.isEndOfLine)
+    snap = "snapshot" *> (Snapshot <$> t parser <*> t meta)
     meta = ObjectMeta <$> creation <*> t guid <*> t size <*> t size
     t x = A.char '\t' *> x
     creation = seconds <$> A.decimal
@@ -239,26 +254,37 @@ sshCmd spec = P.shell $ "ssh " ++ show spec ++ " " ++ shellCmd
 allOutputs :: P.ProcessConfig () () () -> P.ProcessConfig () (STM LBS.ByteString) (STM LBS.ByteString)
 allOutputs command = P.setStdin P.closed $ P.setStdout P.byteStringOutput $ P.setStderr P.byteStringOutput command
 
+data Host = IPv6Host IP6.IPv6 | IPv4Host IP4.IPv4 | TextHost Text
+
+instance HasParser Host where
+    parser = (IPv6Host <$> IP6.parser) 
+         <|> (IPv4Host <$> IP4.parser) 
+         <|> (TextHost <$> A.takeWhile (not . A.inClass " @:\t"))
+
+instance Show Host where
+    show (IPv6Host ip) = T.unpack $ IP6.encode ip
+    show (IPv4Host ip) = T.unpack $ IP4.encode ip
+    show (TextHost h)  = T.unpack h
 
 data SSHSpec = SSHSpec {
-    user :: Maybe ByteString,
-    host :: ByteString
+    user :: Maybe Text,
+    host :: Host
 } deriving (Generic)
 
 instance Show SSHSpec where
     show SSHSpec{..} = case user of
-        Nothing -> BS.unpack host
-        Just usr -> show usr ++ "@" ++ BS.unpack host
+        Nothing -> show host
+        Just usr -> T.unpack usr ++ "@" ++ show host
 
 instance ParseField SSHSpec where
-    readField = Opt.eitherReader (first ("Parse error: " ++ ) . A.parseOnly (sshSpecP <* A.endOfInput) . BS.pack)
+    readField = unWithParser <$> readField
 
-sshSpecP :: A.Parser SSHSpec
-sshSpecP = do
-    let reserved = A.inClass " @/"
-    user <- (Just <$> A.takeWhile (not . reserved) <* "@") <|> pure Nothing
-    host <- A.takeWhile (not . reserved)
-    return SSHSpec{..}
+instance HasParser SSHSpec where
+    parser = do
+        let reserved = A.inClass " @/"
+        user <- (Just <$> A.takeWhile (not . reserved) <* "@") <|> pure Nothing
+        host <- parser
+        return SSHSpec{..}
 
 newtype SnapSet = SnapSet {getSnapSet :: Map GUID (Map SnapshotName ObjectMeta)} deriving (Show)
 
@@ -385,20 +411,36 @@ copyPlan srcFS src dstFS dst =
     dstByDate = byDate relevantOnDst
 
 
+data Remotable a 
+    = Remote SSHSpec a
+    | Local a
+    deriving Generic
 
+instance (HasParser a, Typeable a) => ParseRecord (Remotable a) where
+    parseRecord = fromOnly <$> parseRecord
 
--- data Remotable a = Remotable {
---     ssh :: Maybe SSHSpec,
---     thing :: a
--- } deriving Show
+thing :: Remotable a -> a
+thing (Remote _ a) = a
+thing (Local a) = a
 
--- remotableP :: A.Parser a -> A.Parser (Remote a)
--- remotableP a = do
---     ssh <- sshSpecP
---     ":"
---     thing <- a
---     return Remote{..}
+remotable :: a -> (SSHSpec -> a) -> Remotable x -> a
+remotable _ f (Remote spec _) = f spec
+remotable def _ (Local _) = def
 
+instance Show a => Show (Remotable a) where
+    show (Local a) = show a
+    show (Remote spec a) = show spec ++ ":" ++ show a
 
+instance HasParser a => HasParser (Remotable a) where
+    parser = remote <|> local
+        where
+        remote = Remote <$> (parser <* ":") <*> parser
+        local = Local <$> parser
+
+instance (HasParser a, Typeable a) => ParseField (Remotable a) where
+    readField = unWithParser <$> readField
+instance (HasParser a, Typeable a) => ParseFields (Remotable a)
+-- instance ParseRecord (Remotable a) 
+-- deriving anyclass instance (Generic a) => ParseRecord (Remotable a)
 
 
