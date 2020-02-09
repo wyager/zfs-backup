@@ -17,7 +17,9 @@ import System.IO (Handle, hClose)
 import Control.Concurrent.STM (STM, atomically)
 import Control.Concurrent (threadDelay)
 import GHC.Generics (Generic)
-import Options.Generic (ParseRecord, ParseField, ParseFields, Only(fromOnly), Wrapped, readField, unwrapRecord, parseRecord, type (<?>), type (:::))
+import Options.Generic (ParseRecord, ParseField, ParseFields, 
+    Only(fromOnly), Wrapped, readField, unwrapRecord, parseRecord, 
+    type (<?>), type (:::), parseRecordWithModifiers, lispCaseModifiers)
 import qualified Options.Applicative as Opt
 import Data.Bifunctor (first)
 import Data.Map.Strict (Map)
@@ -41,7 +43,7 @@ data Command w
     = List {
         remote :: w ::: Maybe SSHSpec <?> "Remote host to list on"
     } 
-    | Copy {
+    | CopySnapshots {
         src :: w ::: Remotable FilesystemName <?> "Can be \"tank/set\" or \"user@host:tank/set\"",
         dst :: w ::: Remotable FilesystemName <?> "Can be \"tank/set\" or \"user@host:tank/set\"",
         sendCompressed :: w ::: Bool <?> "Send using LZ4 compression",
@@ -50,7 +52,8 @@ data Command w
     }
     deriving (Generic)
 
-instance ParseRecord (Command Wrapped)
+instance ParseRecord (Command Wrapped) where
+    parseRecord = parseRecordWithModifiers lispCaseModifiers
 
 speedTest :: IO ()
 speedTest = printProgress $ \update -> do
@@ -68,7 +71,7 @@ runCommand = do
                     Nothing -> localCmd
                     Just spec -> sshCmd spec
             print result
-        Copy{..} -> do
+        CopySnapshots{..} -> do
             let srcList = remotable localCmd sshCmd src
                 dstList = remotable localCmd sshCmd dst
                 srcRemote = remotable Nothing Just src
