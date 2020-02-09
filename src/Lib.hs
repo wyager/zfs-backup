@@ -1,4 +1,4 @@
-module Lib where
+module Lib (speedTest, runCommand) where
 
 import Data.Word (Word64)
 import Data.ByteString (ByteString)
@@ -17,7 +17,7 @@ import System.IO (Handle, hClose)
 import Control.Concurrent.STM (STM, atomically)
 import Control.Concurrent (threadDelay)
 import GHC.Generics (Generic)
-import Options.Generic (ParseRecord, ParseField, ParseFields, Only(fromOnly), readField, getRecord, parseRecord, type (<?>)(unHelpful))
+import Options.Generic (ParseRecord, ParseField, ParseFields, Only(fromOnly), Wrapped, readField, unwrapRecord, parseRecord, type (<?>), type (:::))
 import qualified Options.Applicative as Opt
 import Data.Bifunctor (first)
 import Data.Map.Strict (Map)
@@ -36,20 +36,21 @@ import Data.Typeable (Typeable)
 
 data ListError = CommandError ByteString | ZFSListParseError String deriving (Show, Ex.Exception)
 
-type RFSDoc x = x <?> "Can be \"tank/set\" or \"user@host:tank/set\""
 
-data Command 
+data Command w 
     = List {
-        remote :: Maybe SSHSpec
+        remote :: w ::: Maybe SSHSpec <?> "Remote host to list on"
     } 
     | Copy {
-        src :: RFSDoc (Remotable FilesystemName),
-        dst :: RFSDoc (Remotable FilesystemName),
-        sendCompressed :: Bool,
-        sendRaw :: Bool,
-        dryRun :: Bool
+        src :: w ::: Remotable FilesystemName <?> "Can be \"tank/set\" or \"user@host:tank/set\"",
+        dst :: w ::: Remotable FilesystemName <?> "Can be \"tank/set\" or \"user@host:tank/set\"",
+        sendCompressed :: w ::: Bool <?> "Send using LZ4 compression",
+        sendRaw :: w ::: Bool <?> "Send Raw (can be used to securely backup encrypted datasets)",
+        dryRun :: w ::: Bool <?> "Don't actually send, just print commands"
     }
-    deriving (Generic, ParseRecord, Show)
+    deriving (Generic)
+
+instance ParseRecord (Command Wrapped)
 
 speedTest :: IO ()
 speedTest = printProgress $ \update -> do
@@ -57,12 +58,10 @@ speedTest = printProgress $ \update -> do
     let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ "dd bs=1m of=/dev/null"
     oneStep update sndProc rcvProc
 
-someFunc :: IO ()
-someFunc = runCommand
 
 runCommand :: IO ()
 runCommand = do
-    command <- getRecord "ZFS Backup Tool"
+    command <- unwrapRecord "ZFS Backup Tool"
     case command of
         List host -> do
             result <- listWith $ case host of
@@ -70,15 +69,13 @@ runCommand = do
                     Just spec -> sshCmd spec
             print result
         Copy{..} -> do
-            let src' = unHelpful src
-                dst' = unHelpful dst
-                srcList = remotable localCmd sshCmd src'
-                dstList = remotable localCmd sshCmd dst'
-                srcRemote = remotable Nothing Just src'
-                dstRemote = remotable Nothing Just dst'
+            let srcList = remotable localCmd sshCmd src
+                dstList = remotable localCmd sshCmd dst
+                srcRemote = remotable Nothing Just src
+                dstRemote = remotable Nothing Just dst
             srcSnaps <- either Ex.throw (return . snapshots) =<< listWith srcList
             dstSnaps <- either Ex.throw (return . snapshots) =<< listWith dstList
-            case copyPlan (thing src') srcSnaps (thing dst') dstSnaps of
+            case copyPlan (thing src) srcSnaps (thing dst) dstSnaps of
                 Left err -> print err
                 Right plan -> if dryRun
                     then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan)
@@ -239,9 +236,6 @@ objects = many object <* A.endOfInput
 seconds :: Word64 -> UTCTime
 seconds = posixSecondsToUTCTime . fromIntegral
 
-class PoolM m where 
-    contents :: PoolName -> m [Object]
-
 shellCmd :: String
 shellCmd = "zfs list -Hp -t all -o type,name,creation,guid,referenced,used" 
 
@@ -324,7 +318,7 @@ recvArgs dstFS send =
 data CopyPlan
     = Nada
     | FullCopy GUID SnapshotName FilesystemName
-    | Incremental {startDstNameOf :: SnapshotName, incrSteps :: [IncrStep]} deriving Show
+    | Incremental {_startDstNameOf :: SnapshotName, _incrSteps :: [IncrStep]} 
 
 sendCommand :: Maybe SSHSpec -> SendOptions -> Either SnapshotName IncrStep -> (String, [String])
 sendCommand ssh opts snap = case ssh of
@@ -354,6 +348,8 @@ prettyPlan (FullCopy _ name _) = "Full copy: " ++ show name
 prettyPlan (Incremental dstInit steps) = "Incremental copy. Starting from " ++ show dstInit ++ " on dest.\n" ++ concatMap prettyStep steps
     where 
     prettyStep (IncrStep _ startName _ stopName) = show startName ++ " -> " ++ show stopName ++ "\n"
+instance Show CopyPlan where
+    show = prettyPlan
 
 withFS :: FilesystemName -> SnapSet -> SnapSet
 withFS fsName (SnapSet snaps) = 
