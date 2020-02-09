@@ -1,4 +1,4 @@
-module Lib (speedTest, runCommand, History, HasParser, parser) where
+module Lib (speedTest, runCommand, History, HasParser, parser, temporalDiv, TimeUnit(..)) where
 
 import Data.Word (Word64)
 import Data.ByteString (ByteString)
@@ -7,8 +7,10 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.Char8 as BS
-import Data.Time.Clock (UTCTime)
+import Data.Time.Clock (UTCTime(UTCTime))
+import qualified Data.Time.Clock as Clock 
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
+import qualified Data.Time.Calendar as Cal
 import qualified Data.Attoparsec.Text as A
 import Control.Applicative (many, (<|>))
 import qualified System.Process.Typed as P
@@ -39,21 +41,44 @@ import Data.Typeable (Typeable)
 data ListError = CommandError ByteString | ZFSListParseError String deriving (Show, Ex.Exception)
 
 
-data TimeUnit = Minute | Hour | Day | Week | Month | Year deriving (Eq,Ord)
+data TimeUnit = Day | Month | Year deriving (Eq,Ord)
+
+
+
+-- nominalDiff :: TimeUnit -> NominalDiffTime
+-- nominalDiff = 
+
+clipTo :: TimeUnit -> UTCTime -> (UTCTime,UTCTime)
+clipTo unit time = case unit of
+    Day -> let baseline = UTCTime (Clock.utctDay time) 0 in (baseline, Clock.addUTCTime Clock.nominalDay baseline)
+    Month -> let (y,m,_d) = Cal.toGregorian (Clock.utctDay time) 
+                 baseline = Cal.fromGregorian y m 1
+                 end = Cal.fromGregorian y m $ Cal.gregorianMonthLength y m
+             in (UTCTime baseline 0, Clock.addUTCTime Clock.nominalDay (UTCTime end 0))
+    Year -> let (y,_m,_d) = Cal.toGregorian (Clock.utctDay time) 
+                baseline = Cal.fromGregorian y 1 1
+                end = Cal.fromGregorian y 12 31
+            in (UTCTime baseline 0, Clock.addUTCTime Clock.nominalDay (UTCTime end 0))
+
+temporalDiv :: TimeUnit -> UTCTime -> (UTCTime, Rational)
+temporalDiv unit time = (lo, toRational fraction)
+    where
+    (lo,hi) = clipTo unit time
+    elapsed = time `Clock.diffUTCTime` lo
+    maxDur = hi `Clock.diffUTCTime` lo
+    fraction = elapsed / maxDur
+
+bin :: Ord a => Integer -> [(a, Rational, k)] -> Map a (Map Rational k)
+bin bins items = undefined
+
 
 instance Show TimeUnit where
-    show Minute = "minute"
-    show Hour = "hour"
     show Day = "day"
-    show Week = "week"
     show Month = "month"
     show Year = "year"
 
 instance HasParser TimeUnit where
-    parser = Minute <$ ("minute" <|> "min")
-         <|> Hour <$ ("hour" <|> "hr")
-         <|> Day <$ "day" 
-         <|> Week <$ "week" 
+    parser = Day <$ "day" 
          <|> Month <$ "month" 
          <|> Year <$ ("year" <|> "yr")
 data Period = Period Word TimeUnit
@@ -92,7 +117,7 @@ data Command w
     | CleanupSnapshots {
         filesystem :: w ::: Remotable FilesystemName <?> "Can be \"tank/set\" or \"user@host:tank/set\"",
         mostRecent :: w ::: Maybe Int <?> "Keep most recent N snapshots",
-        alsoKeep :: w ::: [History] <?> "To keep 1 snapshot per month for the last 12 months, use \"12@1-per-month\". To keep up to 10 snapshots a day, for the last 10 days, use \"100@10-per-day\", and so on. Can use minute, hour, day, week, month, year. Multiple of these flags will result in all the specified snaps being kept."
+        alsoKeep :: w ::: [History] <?> "To keep 1 snapshot per month for the last 12 months, use \"12@1-per-month\". To keep up to 10 snapshots a day, for the last 10 days, use \"100@10-per-day\", and so on. Can use day, month, year. Multiple of these flags will result in all the specified snaps being kept."
     }
     deriving (Generic)
 
@@ -375,6 +400,8 @@ planDeletion fsName snapSet mostRecentN histories = do
     -- where
     -- mostRecent :: Set SnapshotName
     -- mostRecent 
+
+
 
 keepHistory :: Ord a => Map UTCTime a -> History -> Set a
 keepHistory snaps history = undefined
