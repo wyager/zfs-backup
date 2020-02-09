@@ -48,16 +48,16 @@ data Command
 
 speedTest :: IO ()
 speedTest = printProgress $ \update -> do
-    let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ "dd bs=1m if=/dev/zero count=30000"
+    let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ "dd bs=1m if=/dev/zero count=10000"
     let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ "dd bs=1m of=/dev/null"
     oneStep update sndProc rcvProc
 
 someFunc :: IO ()
-someFunc = speedTest
+someFunc = runCommand
 
 runCommand :: IO ()
 runCommand = do
-    command <- getRecord "Tool"
+    command <- getRecord "ZFS Backup Tool"
     case command of
         List host -> do
             result <- listWith $ case host of
