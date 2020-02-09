@@ -3,50 +3,14 @@ module Lib (runCommand) where
 import Lib.Delete (cleanup)
 import Lib.List (list) 
 import Lib.Copy (copy)
-import Data.Word (Word64)
-import Data.ByteString (ByteString)
-import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import qualified Data.ByteString.Lazy as LBS
-import qualified Data.ByteString.Char8 as BS
-import Data.Time.Clock (UTCTime(UTCTime))
-import qualified Data.Time.Clock as Clock 
-import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import qualified Data.Time.Calendar as Cal
-import qualified Data.Attoparsec.Text as A
-import Control.Applicative (many, (<|>))
-import qualified System.Process.Typed as P
-import System.Exit (ExitCode(ExitSuccess,ExitFailure))
-import System.IO (Handle, hClose)
-import Control.Concurrent.STM (STM, atomically)
-import Control.Concurrent (threadDelay)
 import GHC.Generics (Generic)
-import Options.Generic (ParseRecord, ParseField, ParseFields, 
-    Only(fromOnly), Wrapped, readField, unwrapRecord, parseRecord, 
-    type (<?>), type (:::), parseRecordWithModifiers, lispCaseModifiers)
-import qualified Options.Applicative as Opt
-import Data.Bifunctor (first, second)
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
-import Data.Set (Set)
-import qualified Data.Set as Set
-import qualified Control.Exception as Ex
-import Control.Monad (zipWithM, when, unless)
-import Data.List (intercalate)
-import qualified Data.IORef as IORef
-import qualified Control.Concurrent.Async as Async
-import Text.Printf (printf)
-import qualified Net.IPv4 as IP4
-import qualified Net.IPv6 as IP6
-import Data.Typeable (Typeable)
-import Data.Ratio ((%))
+import Options.Generic (ParseRecord, type (:::), type (<?>), Wrapped, 
+    parseRecord, parseRecordWithModifiers, lispCaseModifiers, unwrapRecord)
 
 
-import Lib.Common (Remotable,SSHSpec,remotable,thing)
-import Lib.ZFS (FilesystemName,SnapshotName(..),GUID,SnapSet,snapshots,single,withFS,presentIn,byDate)
+import Lib.Common (Remotable,SSHSpec)
+import Lib.ZFS (FilesystemName)
 import Lib.Units(History)
-import Lib.Progress (printProgress)
 
     -- bin time let (base,frac) = temporalDiv unit time in (base, frac, v)) times
 
