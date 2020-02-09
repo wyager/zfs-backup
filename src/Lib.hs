@@ -29,7 +29,7 @@ import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Control.Exception as Ex
-import Control.Monad (zipWithM, when)
+import Control.Monad (zipWithM, when, unless)
 import Data.List (intercalate)
 import qualified Data.IORef as IORef
 import qualified Control.Concurrent.Async as Async
@@ -85,12 +85,13 @@ data Command w
         dst :: w ::: Remotable FilesystemName <?> "Can be \"tank/set\" or \"user@host:tank/set\"",
         sendCompressed :: w ::: Bool <?> "Send using LZ4 compression",
         sendRaw :: w ::: Bool <?> "Send Raw (can be used to securely backup encrypted datasets)",
-        dryRun :: w ::: Bool <?> "Don't actually send, just print commands"
+        dryRun :: w ::: Bool <?> "Don't actually do anything, just print what's going to happen"
     }
     | CleanupSnapshots {
         filesystem :: w ::: Remotable FilesystemName <?> "Can be \"tank/set\" or \"user@host:tank/set\"",
         mostRecent :: w ::: Maybe Int <?> "Keep most recent N snapshots",
-        alsoKeep :: w ::: [History] <?> "To keep 1 snapshot per month for the last 12 months, use \"12@1-per-month\". To keep up to 10 snapshots a day, for the last 10 days, use \"100@10-per-day\", and so on. Can use day, month, year. Multiple of these flags will result in all the specified snaps being kept."
+        alsoKeep :: w ::: [History] <?> "To keep 1 snapshot per month for the last 12 months, use \"12@1-per-month\". To keep up to 10 snapshots a day, for the last 10 days, use \"100@10-per-day\", and so on. Can use day, month, year. Multiple of these flags will result in all the specified snaps being kept.",
+        dryRun :: w ::: Bool <?> "Don't actually do anything, just print what's going to happen"
     }
     deriving (Generic)
 
@@ -128,10 +129,11 @@ runCommand = do
                     else printProgress $ \update -> executeCopyPlan update srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan
         CleanupSnapshots{..} -> do
             let list = remotable localCmd sshCmd filesystem
-                -- remote = remotable Nothing Just filesystem
+                remote = remotable Nothing Just filesystem
             snaps <- either Ex.throw (return . snapshots) =<< listWith list
             plan <- either (Ex.throw . Couldn'tPlan) return $ planDeletion (thing filesystem) snaps (maybe 0 id mostRecent) alsoKeep
-            print plan
+            putStrLn $ prettyDeletePlan plan
+            unless dryRun $ executeDeletePlan remote plan
 
 -- planDeletion :: FilesystemName -> SnapSet -> Int -> [History] -> Either String DeletePlan
 
@@ -204,6 +206,14 @@ executeCopyPlan progress sndSpec rcvSpec sndOpts plan = case plan of
         let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ P.proc sndExe sndArgs
         let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
         oneStep progress sndProc rcvProc
+
+
+executeDeletePlan :: Maybe SSHSpec -> DeletePlan -> IO ()
+executeDeletePlan delSpec DeletePlan{..} = flip mapM_ toDelete $ \snapshot -> do
+    let (delExe, delArgs) = deleteCommand delSpec snapshot
+    let delProc = P.setStdin P.closed $ P.proc delExe delArgs
+    print delProc
+    P.withProcessWait_ delProc $ \_del -> return ()
 
 listWith :: P.ProcessConfig () () () -> IO (Either ListError [Object])
 listWith cmd = do
@@ -367,8 +377,14 @@ recvArgs dstFS send =
                 Left (SnapshotName _fs s) -> s
         in ["receive", show $ SnapshotName dstFS snap]
 
-data DeletePlan = DeletePlan {delete :: Set SnapshotName, keep :: Set SnapshotName} deriving Show
+data DeletePlan = DeletePlan {toDelete :: Set SnapshotName, toKeep :: Set SnapshotName} deriving Show
 
+prettyDeletePlan :: DeletePlan -> String
+prettyDeletePlan (DeletePlan delete keep) = concat
+    [ printf "Deleting %i snaps\n" (length delete)
+    , printf "Keeping %i snaps:\n" (length keep)
+    , concatMap (printf "  %s\n" . show) (Set.toList keep)
+    ]
 
 
 planDeletion :: FilesystemName -> SnapSet -> Int -> [History] -> Either String DeletePlan
@@ -448,6 +464,10 @@ keepHistory snaps (History count (Period frac timeUnit)) = Set.fromList $ take c
             Nothing -> []
             Just (v,_) -> [v]
 
+deleteCommand :: Maybe SSHSpec -> SnapshotName -> (String, [String])
+deleteCommand ssh snap = case ssh of
+    Nothing -> ("zfs", ["destroy", show snap])
+    Just spec -> ("ssh", [show spec, "zfs", "destroy", show snap])
 
 data CopyPlan
     = CopyNada
