@@ -1,4 +1,4 @@
-module Lib (speedTest, runCommand) where
+module Lib (speedTest, runCommand, History, HasParser, parser) where
 
 import Data.Word (Word64)
 import Data.ByteString (ByteString)
@@ -21,7 +21,7 @@ import Options.Generic (ParseRecord, ParseField, ParseFields,
     Only(fromOnly), Wrapped, readField, unwrapRecord, parseRecord, 
     type (<?>), type (:::), parseRecordWithModifiers, lispCaseModifiers)
 import qualified Options.Applicative as Opt
-import Data.Bifunctor (first)
+import Data.Bifunctor (first, second)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
@@ -39,6 +39,45 @@ import Data.Typeable (Typeable)
 data ListError = CommandError ByteString | ZFSListParseError String deriving (Show, Ex.Exception)
 
 
+data TimeUnit = Minute | Hour | Day | Week | Month | Year deriving (Eq,Ord)
+
+instance Show TimeUnit where
+    show Minute = "minute"
+    show Hour = "hour"
+    show Day = "day"
+    show Week = "week"
+    show Month = "month"
+    show Year = "year"
+
+instance HasParser TimeUnit where
+    parser = Minute <$ ("minute" <|> "min")
+         <|> Hour <$ ("hour" <|> "hr")
+         <|> Day <$ "day" 
+         <|> Week <$ "week" 
+         <|> Month <$ "month" 
+         <|> Year <$ ("year" <|> "yr")
+data Period = Period Word TimeUnit
+instance Show Period where
+    show (Period count unit) = show count ++ "-per-" ++ show unit
+
+instance HasParser Period where
+    parser = Period <$> A.decimal <*> ("-per-" *> parser)
+
+data History = History Word Period 
+
+instance Show History where
+    show (History count period) = show count ++ "@" ++ show period
+
+instance HasParser History where
+    parser = History <$> A.decimal <*> ("@" *> parser)
+
+instance ParseField History where
+    readField = unWithParser <$> readField
+
+-- instance Show 
+
+-- Don't worry about the w, (:::), <?> stuff. That's just
+-- there to let the arg parser auto-generate docs
 data Command w 
     = List {
         remote :: w ::: Maybe SSHSpec <?> "Remote host to list on"
@@ -50,8 +89,14 @@ data Command w
         sendRaw :: w ::: Bool <?> "Send Raw (can be used to securely backup encrypted datasets)",
         dryRun :: w ::: Bool <?> "Don't actually send, just print commands"
     }
+    | CleanupSnapshots {
+        filesystem :: w ::: Remotable FilesystemName <?> "Can be \"tank/set\" or \"user@host:tank/set\"",
+        mostRecent :: w ::: Maybe Int <?> "Keep most recent N snapshots",
+        alsoKeep :: w ::: [History] <?> "To keep 1 snapshot per month for the last 12 months, use \"12@1-per-month\". To keep up to 10 snapshots a day, for the last 10 days, use \"100@10-per-day\", and so on. Can use minute, hour, day, week, month, year. Multiple of these flags will result in all the specified snaps being kept."
+    }
     deriving (Generic)
 
+-- CopySnapshots gets translated to copy-snapshots
 instance ParseRecord (Command Wrapped) where
     parseRecord = parseRecordWithModifiers lispCaseModifiers
 
@@ -83,6 +128,9 @@ runCommand = do
                 Right plan -> if dryRun
                     then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan)
                     else printProgress $ \update -> executeCopyPlan update srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan
+        CleanupSnapshots{..} -> do
+            print mostRecent
+            mapM_ print alsoKeep
 
 trackProgress :: Int -> (Int -> IO ()) -> ((Int -> IO ()) -> IO a) -> IO a
 trackProgress delay report go = do
@@ -142,7 +190,7 @@ oneStep progress sndProc rcvProc = do
 
 executeCopyPlan :: (Int -> IO ()) -> Maybe SSHSpec -> Maybe SSHSpec -> SendOptions -> CopyPlan -> IO ()
 executeCopyPlan progress sndSpec rcvSpec sndOpts plan = case plan of
-    Nada -> putStrLn "Nothing to do"
+    CopyNada -> putStrLn "Nothing to do"
     FullCopy _guid snap dstFs -> goWith (Left snap) dstFs
     Incremental start steps -> flip mapM_ steps $ \step ->
         goWith (Right step) (snapshotFSOf start)
@@ -300,26 +348,40 @@ sendOptArgs SendOptions{..} =
     ++ if sendRawOpt then ["--raw"] else []
 
 data IncrStep = IncrStep {
-        startGUIDOf :: GUID,
         startSrcNameOf :: SnapshotName,
-        stopGUIDOf :: GUID,
         stopSrcNameOf :: SnapshotName
     }   deriving Show
 
 sendArgs :: SendOptions -> Either SnapshotName IncrStep -> [String]
 sendArgs opts send = ["send"] ++ sendOptArgs opts ++ case send of
-        Right (IncrStep _ startName _ stopName) -> ["-i", show startName, show stopName]
+        Right (IncrStep startName stopName) -> ["-i", show startName, show stopName]
         Left snap -> [show snap]
 
 recvArgs :: FilesystemName -> Either SnapshotName IncrStep -> [String]
 recvArgs dstFS send = 
         let snap =  case send of
-                Right (IncrStep _ _ _ (SnapshotName _fs s)) -> s
+                Right (IncrStep _ (SnapshotName _fs s)) -> s
                 Left (SnapshotName _fs s) -> s
         in ["receive", show $ SnapshotName dstFS snap]
 
+data DeletePlan = DeletePlan {delete :: Set SnapshotName, keep :: Set SnapshotName}
+
+planDeletion :: FilesystemName -> SnapSet -> Int -> [History] -> Either String DeletePlan
+planDeletion fsName snapSet mostRecentN histories = do
+    inOrder :: Map UTCTime SnapshotName <- mapM (second snd . single) $ byDate $ withFS fsName snapSet
+    let mostRecent = map snd $ take mostRecentN $ Map.toDescList inOrder
+    undefined
+
+    -- where
+    -- mostRecent :: Set SnapshotName
+    -- mostRecent 
+
+keepHistory :: Ord a => Map UTCTime a -> History -> Set a
+keepHistory snaps history = undefined
+
+
 data CopyPlan
-    = Nada
+    = CopyNada
     | FullCopy GUID SnapshotName FilesystemName
     | Incremental {_startDstNameOf :: SnapshotName, _incrSteps :: [IncrStep]} 
 
@@ -337,7 +399,7 @@ formatCommand :: (String, [String]) -> String
 formatCommand (cmd, args) = intercalate " " (cmd : args)
 
 showShell :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions ->  CopyPlan -> String
-showShell _ _ _ Nada = "true"
+showShell _ _ _ CopyNada = "true"
 showShell send rcv opts (FullCopy _ snap dstFs) = formatCommand (sendCommand send opts (Left snap)) ++ " | pv | " ++ formatCommand (recCommand rcv dstFs (Left snap))
 showShell send rcv opts (Incremental startDstSnap steps) 
     = concat $ map (\step -> 
@@ -346,11 +408,11 @@ showShell send rcv opts (Incremental startDstSnap steps)
         steps
 
 prettyPlan :: CopyPlan -> String
-prettyPlan Nada = "Do Nothing"
+prettyPlan CopyNada = "Do Nothing"
 prettyPlan (FullCopy _ name _) = "Full copy: " ++ show name
 prettyPlan (Incremental dstInit steps) = "Incremental copy. Starting from " ++ show dstInit ++ " on dest.\n" ++ concatMap prettyStep steps
     where 
-    prettyStep (IncrStep _ startName _ stopName) = show startName ++ " -> " ++ show stopName ++ "\n"
+    prettyStep (IncrStep startName stopName) = show startName ++ " -> " ++ show stopName ++ "\n"
 instance Show CopyPlan where
     show = prettyPlan
 
@@ -382,7 +444,7 @@ copyPlan :: FilesystemName -> SnapSet -> FilesystemName -> SnapSet -> Either Str
 copyPlan srcFS src dstFS dst = 
     case Map.lookupMax dstByDate of
             Nothing -> case Map.lookupMax srcByDate  of 
-                Nothing -> Right Nada -- No backups to copy over!
+                Nothing -> Right CopyNada -- No backups to copy over!
                 Just (_date, srcSnaps) -> do
                     (guid,name) <- single srcSnaps
                     Right (FullCopy guid name dstFS)                    
@@ -397,9 +459,9 @@ copyPlan srcFS src dstFS dst =
                         when (latestDstGUID /= initialGUID) (Left "Error: Initial sync GUID mismatch")
                 -- TODO: Ensure starting GUIDs match (use _latestDstGUID)
                 steps <- zipWithM (\as bs -> do
-                    (aGUID,aName) <- single as
-                    (bGUID,bName) <- single bs
-                    Right $ IncrStep aGUID aName bGUID bName)
+                    (_aGUID,aName) <- single as
+                    (_bGUID,bName) <- single bs
+                    Right $ IncrStep aName bName)
                     inOrder 
                     (tail inOrder)
                 Right $ Incremental latestDstName steps
@@ -439,7 +501,5 @@ instance HasParser a => HasParser (Remotable a) where
 instance (HasParser a, Typeable a) => ParseField (Remotable a) where
     readField = unWithParser <$> readField
 instance (HasParser a, Typeable a) => ParseFields (Remotable a)
--- instance ParseRecord (Remotable a) 
--- deriving anyclass instance (Generic a) => ParseRecord (Remotable a)
 
 
