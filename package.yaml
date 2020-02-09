@@ -64,7 +64,7 @@ library:
   source-dirs: src
 
 executables:
-  zfs-backup-exe:
+  zfs-backup:
     main:                Main.hs
     source-dirs:         app
     ghc-options:

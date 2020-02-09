@@ -72,7 +72,6 @@ instance HasParser History where
 instance ParseField History where
     readField = unWithParser <$> readField
 
--- instance Show 
 
 -- Don't worry about the w, (:::), <?> stuff. That's just
 -- there to let the arg parser auto-generate docs
