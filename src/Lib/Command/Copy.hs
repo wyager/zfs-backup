@@ -60,7 +60,7 @@ executeCopyPlan sndSpec rcvSpec sndOpts plan = case plan of
         let (rcvExe,rcvArgs) = recCommand rcvSpec dstFs step
         let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ P.proc sndExe sndArgs
         let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
-        printProgress ("Copying to " ++ show rcvSpec) $ \progress -> oneStep progress sndProc rcvProc
+        printProgress ("Copying to " ++ show dstFs) $ \progress -> oneStep progress sndProc rcvProc
 
 
 data IncrStep = IncrStep {
