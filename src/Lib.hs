@@ -1,19 +1,15 @@
 module Lib (runCommand) where
 
 import           GHC.Generics    (Generic)
-import           Lib.Copy        (copy)
-import           Lib.Delete      (cleanup)
-import           Lib.List        (list)
+import           Lib.Command.Copy        (copy)
+import           Lib.Command.Delete      (cleanup)
+import           Lib.Command.List        (listPrint)
 import           Options.Generic (ParseRecord, Wrapped, lispCaseModifiers,
                                   parseRecord, parseRecordWithModifiers,
                                   unwrapRecord, type (:::), type (<?>))
-
-
 import           Lib.Common      (Remotable, SSHSpec)
 import           Lib.Units       (History)
 import           Lib.ZFS         (FilesystemName)
-
-    -- bin time let (base,frac) = temporalDiv unit time in (base, frac, v)) times
 
 -- Don't worry about the w, (:::), <?> stuff. That's just
 -- there to let the arg parser auto-generate docs
@@ -40,13 +36,11 @@ data Command w
 instance ParseRecord (Command Wrapped) where
     parseRecord = parseRecordWithModifiers lispCaseModifiers
 
-
-
 runCommand :: IO ()
 runCommand = do
     command <- unwrapRecord "ZFS Backup Tool"
     case command of
-        List host            -> list host >>= print
+        List host            -> listPrint host
         CopySnapshots{..}    -> copy src dst sendCompressed sendRaw dryRun
         CleanupSnapshots{..} -> cleanup filesystem mostRecent alsoKeep dryRun
 
