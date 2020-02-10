@@ -78,7 +78,7 @@ recvArgs dstFS send =
         let snap =  case send of
                 Right (IncrStep _ (SnapshotName _fs s)) -> s
                 Left (SnapshotName _fs s) -> s
-        in ["receive", show $ SnapshotName dstFS snap]
+        in ["receive", "-o", "mountpoint=none", show $ SnapshotName dstFS snap]
 
 
 
