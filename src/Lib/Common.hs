@@ -16,12 +16,11 @@ import           Options.Generic      (Only (fromOnly), ParseField, ParseFields,
 
 class HasParser a where
     parser :: A.Parser a
+
 newtype WithParser a = WithParser {unWithParser :: a}
+
 instance (Typeable a, HasParser a) => ParseField (WithParser a) where
     readField = Opt.eitherReader (first ("Parse error: " ++ ) . A.parseOnly ((WithParser <$> parser) <* A.endOfInput) . T.pack)
-
-
-
 
 data Host = IPv6Host IP6.IPv6 | IPv4Host IP4.IPv4 | TextHost Text
 
@@ -55,7 +54,6 @@ instance HasParser SSHSpec where
         user <- (Just <$> A.takeWhile (not . reserved) <* "@") <|> pure Nothing
         host <- parser
         return SSHSpec{..}
-
 
 data Remotable a
     = Remote SSHSpec a

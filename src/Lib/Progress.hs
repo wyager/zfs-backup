@@ -5,20 +5,20 @@ import qualified Control.Concurrent.Async as Async
 import qualified Data.IORef               as IORef
 import           Text.Printf              (printf)
 
-trackProgress :: Int -> (Int -> IO ()) -> ((Int -> IO ()) -> IO a) -> IO a
+trackProgress :: Int -> (Int -> Int -> IO ()) -> ((Int -> IO ()) -> IO a) -> IO a
 trackProgress delay report go = do
     counter <- IORef.newIORef 0
     let update i = IORef.atomicModifyIORef' counter (\c -> (c + i, ()))
     done <- Async.async (go update)
-    let loop = do
+    let loop total = do
             timer <- Async.async $ threadDelay delay
             Async.waitEither done timer >>= \case
                 Left result -> return result
                 Right () -> do
                     progress <- IORef.atomicModifyIORef' counter (\c -> (0, c))
-                    report progress
-                    loop
-    loop
+                    report (total + progress) progress
+                    loop (total + progress)
+    loop 0
 
 
 sizeWithUnits :: Integral i => String -> i -> String
@@ -34,7 +34,14 @@ sizeWithUnits unit i = printf "%.1f %s%s" scaled prefix unit
         _ -> ("T", 1e12)
     scaled = f / divisor
 
+detailed :: Integral i => String -> String -> String -> i -> i -> String
+detailed label unit period total progress = printf "%s: %s, %s" label total' progress'
+    where
+    progress' = sizeWithUnits (unit ++ "/" ++ period) progress
+    total' = sizeWithUnits unit total
 
 
-printProgress :: ((Int -> IO ()) -> IO a) -> IO a
-printProgress = trackProgress (1000*1000) (putStrLn . sizeWithUnits "B/sec")
+printProgress :: String -> ((Int -> IO ()) -> IO a) -> IO a
+printProgress label = trackProgress 
+    (1000*1000) 
+    (\total prog -> putStrLn $ detailed label "B" "sec" total prog)
