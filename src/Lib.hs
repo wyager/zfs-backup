@@ -1,25 +1,26 @@
 module Lib (runCommand) where
 
-import Lib.Delete (cleanup)
-import Lib.List (list) 
-import Lib.Copy (copy)
-import GHC.Generics (Generic)
-import Options.Generic (ParseRecord, type (:::), type (<?>), Wrapped, 
-    parseRecord, parseRecordWithModifiers, lispCaseModifiers, unwrapRecord)
+import           GHC.Generics    (Generic)
+import           Lib.Copy        (copy)
+import           Lib.Delete      (cleanup)
+import           Lib.List        (list)
+import           Options.Generic (ParseRecord, Wrapped, lispCaseModifiers,
+                                  parseRecord, parseRecordWithModifiers,
+                                  unwrapRecord, type (:::), type (<?>))
 
 
-import Lib.Common (Remotable,SSHSpec)
-import Lib.ZFS (FilesystemName)
-import Lib.Units(History)
+import           Lib.Common      (Remotable, SSHSpec)
+import           Lib.Units       (History)
+import           Lib.ZFS         (FilesystemName)
 
     -- bin time let (base,frac) = temporalDiv unit time in (base, frac, v)) times
 
 -- Don't worry about the w, (:::), <?> stuff. That's just
 -- there to let the arg parser auto-generate docs
-data Command w 
+data Command w
     = List {
         remote :: w ::: Maybe SSHSpec <?> "Remote host to list on"
-    } 
+    }
     | CopySnapshots {
         src :: w ::: Remotable FilesystemName <?> "Can be \"tank/set\" or \"user@host:tank/set\"",
         dst :: w ::: Remotable FilesystemName <?> "Can be \"tank/set\" or \"user@host:tank/set\"",
@@ -45,9 +46,9 @@ runCommand :: IO ()
 runCommand = do
     command <- unwrapRecord "ZFS Backup Tool"
     case command of
-        List host -> list host >>= print
-        CopySnapshots{..} -> copy src dst sendCompressed sendRaw dryRun
+        List host            -> list host >>= print
+        CopySnapshots{..}    -> copy src dst sendCompressed sendRaw dryRun
         CleanupSnapshots{..} -> cleanup filesystem mostRecent alsoKeep dryRun
-            
+
 
 
