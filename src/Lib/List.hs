@@ -1,22 +1,22 @@
 module Lib.List (list,listWith,localCmd,sshCmd) where
-import Lib.Common(SSHSpec)
-import Lib.ZFS (Object,objects,listShellCmd)
-import Data.ByteString (ByteString)
-import qualified Data.Text.Encoding as TE
-import qualified Data.ByteString.Lazy as LBS
-import qualified Data.Attoparsec.Text as A
-import qualified System.Process.Typed as P
-import System.Exit (ExitCode(ExitSuccess,ExitFailure))
-import Control.Concurrent.STM (STM, atomically)
-import Data.Bifunctor (first)
-import qualified Control.Exception as Ex
+import           Control.Concurrent.STM (STM, atomically)
+import qualified Control.Exception      as Ex
+import qualified Data.Attoparsec.Text   as A
+import           Data.Bifunctor         (first)
+import           Data.ByteString        (ByteString)
+import qualified Data.ByteString.Lazy   as LBS
+import qualified Data.Text.Encoding     as TE
+import           Lib.Common             (SSHSpec)
+import           Lib.ZFS                (Object, listShellCmd, objects)
+import           System.Exit            (ExitCode (ExitFailure, ExitSuccess))
+import qualified System.Process.Typed   as P
 
 data ListError = CommandError ByteString | ZFSListParseError String deriving (Show, Ex.Exception)
 
 list :: Maybe SSHSpec -> IO ()
 list host = do
     res <- listWith $ case host of
-        Nothing -> localCmd
+        Nothing   -> localCmd
         Just spec -> sshCmd spec
     either Ex.throw print res
 
@@ -28,7 +28,7 @@ listWith cmd = do
         P.waitExitCode proc >>= \case
             ExitSuccess -> return (Right output)
             ExitFailure _i -> return $ Left $ CommandError err
-    return $ output >>= first ZFSListParseError . A.parseOnly objects 
+    return $ output >>= first ZFSListParseError . A.parseOnly objects
 
 
 

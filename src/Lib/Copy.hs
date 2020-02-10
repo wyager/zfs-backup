@@ -1,15 +1,17 @@
 module Lib.Copy (copy,speedTest) where
-import Lib.Progress (printProgress)
-import Lib.Common (Remotable,SSHSpec,remotable,thing)
-import Lib.ZFS (FilesystemName,SnapshotName(..),GUID,SnapSet,snapshots,single,withFS,presentIn,byDate)
-import Lib.List (localCmd, sshCmd,listWith)
+import qualified Control.Exception     as Ex
+import           Control.Monad         (when, zipWithM)
 import qualified Data.ByteString.Char8 as BS
-import qualified System.Process.Typed as P
-import System.IO (Handle, hClose)
-import qualified Data.Map.Strict as Map
-import qualified Control.Exception as Ex
-import Control.Monad (zipWithM, when)
-import Data.List (intercalate)
+import           Data.List             (intercalate)
+import qualified Data.Map.Strict       as Map
+import           Lib.Common            (Remotable, SSHSpec, remotable, thing)
+import           Lib.List              (listWith, localCmd, sshCmd)
+import           Lib.Progress          (printProgress)
+import           Lib.ZFS               (FilesystemName, GUID, SnapSet,
+                                        SnapshotName (..), byDate, presentIn,
+                                        single, snapshots, withFS)
+import           System.IO             (Handle, hClose)
+import qualified System.Process.Typed  as P
 
 copy ::  Remotable FilesystemName ->  Remotable FilesystemName -> Bool -> Bool -> Bool -> IO ()
 copy src dst sendCompressed sendRaw dryRun = do
@@ -35,11 +37,11 @@ oneStep progress sndProc rcvProc = do
             let sndHdl = P.getStdout send
             let rcvHdl = P.getStdin rcv
             let go = do
-                    -- The actual fastest on my mbp seems to be hGet 0x10000, 
+                    -- The actual fastest on my mbp seems to be hGet 0x10000,
                     -- but that feels very machine-dependent. Hopefully hGetSome
                     -- with a bit of room will reliably capture most of the max
                     -- possible performance. With this, I get around 3GB/sec
-                    chunk <- BS.hGetSome sndHdl 0x20000 
+                    chunk <- BS.hGetSome sndHdl 0x20000
                     BS.hPut rcvHdl chunk
                     if BS.null chunk
                         then hClose rcvHdl
@@ -65,7 +67,7 @@ executeCopyPlan progress sndSpec rcvSpec sndOpts plan = case plan of
 
 data IncrStep = IncrStep {
         startSrcNameOf :: SnapshotName,
-        stopSrcNameOf :: SnapshotName
+        stopSrcNameOf  :: SnapshotName
     }   deriving Show
 
 sendArgs :: SendOptions -> Either SnapshotName IncrStep -> [String]
@@ -74,10 +76,10 @@ sendArgs opts send = ["send"] ++ sendOptArgs opts ++ case send of
         Left snap -> [show snap]
 
 recvArgs :: FilesystemName -> Either SnapshotName IncrStep -> [String]
-recvArgs dstFS send = 
+recvArgs dstFS send =
         let snap =  case send of
                 Right (IncrStep _ (SnapshotName _fs s)) -> s
-                Left (SnapshotName _fs s) -> s
+                Left (SnapshotName _fs s)               -> s
         in ["receive", "-o", "mountpoint=none", show $ SnapshotName dstFS snap]
 
 
@@ -86,26 +88,26 @@ recvArgs dstFS send =
 data CopyPlan
     = CopyNada
     | FullCopy GUID SnapshotName FilesystemName
-    | Incremental {_startDstNameOf :: SnapshotName, _incrSteps :: [IncrStep]} 
+    | Incremental {_startDstNameOf :: SnapshotName, _incrSteps :: [IncrStep]}
 
 sendCommand :: Maybe SSHSpec -> SendOptions -> Either SnapshotName IncrStep -> (String, [String])
 sendCommand ssh opts snap = case ssh of
-    Nothing -> ("zfs", sendArgs opts snap)
+    Nothing   -> ("zfs", sendArgs opts snap)
     Just spec -> ("ssh", [show spec, "zfs"] ++ sendArgs opts snap)
 
 recCommand :: Maybe SSHSpec -> FilesystemName -> Either SnapshotName IncrStep -> (String, [String])
-recCommand ssh dstFs snap = case ssh of 
-    Nothing -> ("zfs", recvArgs dstFs snap)
+recCommand ssh dstFs snap = case ssh of
+    Nothing   -> ("zfs", recvArgs dstFs snap)
     Just spec -> ("ssh", [show spec, "zfs"] ++ recvArgs dstFs snap)
 
 data SendOptions = SendOptions
     { sendCompressedOpt :: Bool
-    , sendRawOpt :: Bool
+    , sendRawOpt        :: Bool
     }
 
 sendOptArgs :: SendOptions -> [String]
-sendOptArgs SendOptions{..} = 
-    if sendCompressedOpt then ["--compressed"] else [] 
+sendOptArgs SendOptions{..} =
+    if sendCompressedOpt then ["--compressed"] else []
     ++ if sendRawOpt then ["--raw"] else []
 
 
@@ -117,9 +119,9 @@ formatCommand (cmd, args) = intercalate " " (cmd : args)
 showShell :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions ->  CopyPlan -> String
 showShell _ _ _ CopyNada = "true"
 showShell send rcv opts (FullCopy _ snap dstFs) = formatCommand (sendCommand send opts (Left snap)) ++ " | pv | " ++ formatCommand (recCommand rcv dstFs (Left snap))
-showShell send rcv opts (Incremental startDstSnap steps) 
-    = concat $ map (\step -> 
-        formatCommand (sendCommand send opts (Right step)) ++ " | pv | " ++ 
+showShell send rcv opts (Incremental startDstSnap steps)
+    = concat $ map (\step ->
+        formatCommand (sendCommand send opts (Right step)) ++ " | pv | " ++
         formatCommand (recCommand rcv (snapshotFSOf startDstSnap) (Right step)) ++ "\n")
         steps
 
@@ -127,35 +129,35 @@ prettyPlan :: CopyPlan -> String
 prettyPlan CopyNada = "Do Nothing"
 prettyPlan (FullCopy _ name _) = "Full copy: " ++ show name
 prettyPlan (Incremental dstInit steps) = "Incremental copy. Starting from " ++ show dstInit ++ " on dest.\n" ++ concatMap prettyStep steps
-    where 
+    where
     prettyStep (IncrStep startName stopName) = show startName ++ " -> " ++ show stopName ++ "\n"
 instance Show CopyPlan where
     show = prettyPlan
 
 
 copyPlan :: FilesystemName -> SnapSet -> FilesystemName -> SnapSet -> Either String CopyPlan
-copyPlan srcFS src dstFS dst = 
+copyPlan srcFS src dstFS dst =
     case Map.lookupMax dstByDate of
-            Nothing -> case Map.lookupMax srcByDate  of 
+            Nothing -> case Map.lookupMax srcByDate  of
                 Nothing -> Right CopyNada -- No backups to copy over!
                 Just (_date, srcSnaps) -> do
                     (guid,name) <- single srcSnaps
-                    Right (FullCopy guid name dstFS)                    
+                    Right (FullCopy guid name dstFS)
             Just (latestDstDate, dstSnaps) ->  do
                 (latestDstGUID, latestDstName) <- single dstSnaps
-                let toCopy = Map.dropWhileAntitone (< latestDstDate) srcByDate 
+                let toCopy = Map.dropWhileAntitone (< latestDstDate) srcByDate
                     inOrder = Map.elems toCopy
                 case inOrder of
                     [] -> return ()
                     (initial:_) -> do
-                        (initialGUID,_) <- single initial  
+                        (initialGUID,_) <- single initial
                         when (latestDstGUID /= initialGUID) (Left "Error: Initial sync GUID mismatch")
                 -- TODO: Ensure starting GUIDs match (use _latestDstGUID)
                 steps <- zipWithM (\as bs -> do
                     (_aGUID,aName) <- single as
                     (_bGUID,bName) <- single bs
                     Right $ IncrStep aName bName)
-                    inOrder 
+                    inOrder
                     (tail inOrder)
                 Right $ Incremental latestDstName steps
     where

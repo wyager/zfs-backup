@@ -1,9 +1,9 @@
 module Lib.Progress (printProgress) where
 
-import Control.Concurrent (threadDelay)
-import qualified Data.IORef as IORef
+import           Control.Concurrent       (threadDelay)
 import qualified Control.Concurrent.Async as Async
-import Text.Printf (printf)
+import qualified Data.IORef               as IORef
+import           Text.Printf              (printf)
 
 trackProgress :: Int -> (Int -> IO ()) -> ((Int -> IO ()) -> IO a) -> IO a
 trackProgress delay report go = do
@@ -24,10 +24,10 @@ trackProgress delay report go = do
 sizeWithUnits :: Integral i => String -> i -> String
 sizeWithUnits unit i = printf "%.1f %s%s" scaled prefix unit
     where
-    f = fromIntegral i :: Double 
+    f = fromIntegral i :: Double
     thousands = floor (log f / log 1000) :: Word
     (prefix :: String, divisor :: Double) = case thousands of
-        0 -> ("",  1e0) 
+        0 -> ("",  1e0)
         1 -> ("k", 1e3)
         2 -> ("M", 1e6)
         3 -> ("G", 1e9)

@@ -1,18 +1,18 @@
 
 module Lib.Common(HasParser, parser, unWithParser, Host(..), SSHSpec(..), Remotable(..), thing, remotable) where
 
-import Data.Text (Text)
-import qualified Data.Text as T
+import           Control.Applicative  ((<|>))
 import qualified Data.Attoparsec.Text as A
-import Control.Applicative ((<|>))
-import GHC.Generics (Generic)
-import Options.Generic (ParseRecord, ParseField, ParseFields, 
-    Only(fromOnly), readField, parseRecord)
-import qualified Options.Applicative as Opt
-import Data.Bifunctor (first)
-import qualified Net.IPv4 as IP4
-import qualified Net.IPv6 as IP6
-import Data.Typeable (Typeable)
+import           Data.Bifunctor       (first)
+import           Data.Text            (Text)
+import qualified Data.Text            as T
+import           Data.Typeable        (Typeable)
+import           GHC.Generics         (Generic)
+import qualified Net.IPv4             as IP4
+import qualified Net.IPv6             as IP6
+import qualified Options.Applicative  as Opt
+import           Options.Generic      (Only (fromOnly), ParseField, ParseFields,
+                                       ParseRecord, parseRecord, readField)
 
 class HasParser a where
     parser :: A.Parser a
@@ -26,8 +26,8 @@ instance (Typeable a, HasParser a) => ParseField (WithParser a) where
 data Host = IPv6Host IP6.IPv6 | IPv4Host IP4.IPv4 | TextHost Text
 
 instance HasParser Host where
-    parser = (IPv6Host <$> IP6.parser) 
-         <|> (IPv4Host <$> IP4.parser) 
+    parser = (IPv6Host <$> IP6.parser)
+         <|> (IPv4Host <$> IP4.parser)
          <|> (TextHost <$> A.takeWhile (not . A.inClass " @:\t"))
 
 instance Show Host where
@@ -43,7 +43,7 @@ data SSHSpec = SSHSpec {
 
 instance Show SSHSpec where
     show SSHSpec{..} = case user of
-        Nothing -> show host
+        Nothing  -> show host
         Just usr -> T.unpack usr ++ "@" ++ show host
 
 instance ParseField SSHSpec where
@@ -57,7 +57,7 @@ instance HasParser SSHSpec where
         return SSHSpec{..}
 
 
-data Remotable a 
+data Remotable a
     = Remote SSHSpec a
     | Local a
     deriving Generic
@@ -67,14 +67,14 @@ instance (HasParser a, Typeable a) => ParseRecord (Remotable a) where
 
 thing :: Remotable a -> a
 thing (Remote _ a) = a
-thing (Local a) = a
+thing (Local a)    = a
 
 remotable :: a -> (SSHSpec -> a) -> Remotable x -> a
 remotable _ f (Remote spec _) = f spec
-remotable def _ (Local _) = def
+remotable def _ (Local _)     = def
 
 instance Show a => Show (Remotable a) where
-    show (Local a) = show a
+    show (Local a)       = show a
     show (Remote spec a) = show spec ++ ":" ++ show a
 
 instance HasParser a => HasParser (Remotable a) where

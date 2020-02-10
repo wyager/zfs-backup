@@ -1,19 +1,21 @@
 module Lib.Delete (cleanup) where
-import Lib.List(localCmd,sshCmd,listWith)
-import Lib.ZFS (FilesystemName,SnapshotName(..),SnapSet,snapshots,single,withFS,byDate)
-import Lib.Common (Remotable,SSHSpec,remotable,thing)
-import Lib.Units(binBy)
-import Data.Time.Clock (UTCTime)
+import qualified Control.Exception    as Ex
+import           Control.Monad        (unless)
+import           Data.Bifunctor       (second)
+import           Data.Map.Strict      (Map)
+import qualified Data.Map.Strict      as Map
+import           Data.Set             (Set)
+import qualified Data.Set             as Set
+import           Data.Time.Clock      (UTCTime)
+import           Lib.Common           (Remotable, SSHSpec, remotable, thing)
+import           Lib.List             (listWith, localCmd, sshCmd)
+import           Lib.Units            (binBy)
+import           Lib.Units            (History (..), Period (..))
+import           Lib.ZFS              (FilesystemName, SnapSet,
+                                       SnapshotName (..), byDate, single,
+                                       snapshots, withFS)
 import qualified System.Process.Typed as P
-import Lib.Units(History(..),Period(..))
-import Data.Bifunctor (second)
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
-import Data.Set (Set)
-import qualified Data.Set as Set
-import qualified Control.Exception as Ex
-import Control.Monad (unless)
-import Text.Printf (printf)
+import           Text.Printf          (printf)
 
 data DeleteError = Couldn'tPlan String deriving (Show, Ex.Exception)
 
@@ -56,7 +58,7 @@ planDeletion fsName snapSet mostRecentN histories = do
 
 keepHistory :: forall v . (Ord v) => Map UTCTime v -> History -> Set v
 keepHistory snaps (History count (Period frac timeUnit)) = Set.fromList $ take count best
-    where 
+    where
     -- Outer map - "Base time" (e.g. day boundaries if time unit is day)
     -- Middle map - Start of each bin
     -- Inner map - actual time
@@ -67,10 +69,10 @@ keepHistory snaps (History count (Period frac timeUnit)) = Set.fromList $ take c
         (_base, perBase) <- Map.toDescList binned
         (_frac, perFrac) <- Map.toDescList perBase
         case Map.maxView perFrac of
-            Nothing -> []
+            Nothing    -> []
             Just (v,_) -> [v]
 
 deleteCommand :: Maybe SSHSpec -> SnapshotName -> (String, [String])
 deleteCommand ssh snap = case ssh of
-    Nothing -> ("zfs", ["destroy", show snap])
+    Nothing   -> ("zfs", ["destroy", show snap])
     Just spec -> ("ssh", [show spec, "zfs", "destroy", show snap])
