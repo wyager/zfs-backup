@@ -52,3 +52,7 @@ All of the time-related operations (like splitting a month up into `n` parts) ha
 The tool uses snapshots' `creation` and `guid` metadata to identify them, so you can feel free to use whatever naming scheme you like.
 
 The tool is pretty fast during transfers (not that it has to do much work) - it can handle about 3GB/sec on my laptop, which is faster than any ZFS filesystem I've seen, even on NVMe SSDs, so that probably won't be an issue for anyone.
+
+## Installation
+
+Clone this repo and run `stack install`.
