@@ -4,6 +4,12 @@ This is a simple tool for:
 * Synchronizing ZFS snapshots to local or remote backup targets
 * Cleaning out old snapshots
 
+## Installation
+
+Clone this repo and run `stack install`.
+
+## Usage
+
 The idea is that you have something like this in your crontab:
 
 ```cron
@@ -53,6 +59,71 @@ The tool uses snapshots' `creation` and `guid` metadata to identify them, so you
 
 The tool is pretty fast during transfers (not that it has to do much work) - it can handle about 3GB/sec on my laptop, which is faster than any ZFS filesystem I've seen, even on NVMe SSDs, so that probably won't be an issue for anyone.
 
-## Installation
 
-Clone this repo and run `stack install`.
+## Help Text
+
+```bash
+$ zfs-backup --help
+ZFS Backup Tool
+
+Usage: zfs-backup (list | copy-snapshots | cleanup-snapshots)
+
+Available options:
+  -h,--help                Show this help text
+
+Available commands:
+  list                     
+  copy-snapshots           
+  cleanup-snapshots        
+
+$ zfs-backup list --help
+Usage: zfs-backup list [--remote SSHSPEC] [--ignoring REGEX]...
+
+Available options:
+  -h,--help                Show this help text
+  --remote SSHSPEC         Remote host to list on
+  --ignoring REGEX...      Ignore snapshots with names matching any of these
+                           regexes
+
+$ zfs-backup copy-snapshots --help
+Usage: zfs-backup copy-snapshots --src REMOTABLE FILESYSTEMNAME
+                                 --dst REMOTABLE FILESYSTEMNAME
+                                 [--send-compressed] [--send-raw] [--dry-run]
+                                 [--ignoring REGEX]...
+
+Available options:
+  -h,--help                Show this help text
+  --src REMOTABLE FILESYSTEMNAME
+                           Can be "tank/set" or "user@host:tank/set"
+  --dst REMOTABLE FILESYSTEMNAME
+                           Can be "tank/set" or "user@host:tank/set"
+  --send-compressed        Send using LZ4 compression
+  --send-raw               Send Raw (can be used to securely backup encrypted
+                           datasets)
+  --dry-run                Don't actually do anything, just print what's going
+                           to happen
+  --ignoring REGEX...      Ignore snapshots with names matching any of these
+                           regexes
+
+$ zfs-backup cleanup-snapshots --help
+Usage: zfs-backup cleanup-snapshots --filesystem REMOTABLE FILESYSTEMNAME
+                                    [--most-recent INT] [--also-keep HISTORY]...
+                                    [--dry-run] [--ignoring REGEX]...
+
+Available options:
+  -h,--help                Show this help text
+  --filesystem REMOTABLE FILESYSTEMNAME
+                           Can be "tank/set" or "user@host:tank/set"
+  --most-recent INT        Keep most recent N snapshots
+  --also-keep HISTORY...   To keep 1 snapshot per month for the last 12 months,
+                           use "12@1-per-month". To keep up to 10 snapshots a
+                           day, for the last 10 days, use "100@10-per-day", and
+                           so on. Can use day, month, year. Multiple of these
+                           flags will result in all the specified snaps being
+                           kept. This all works in UTC time, by the way. I'm not
+                           dealing with time zones.
+  --dry-run                Don't actually do anything, just print what's going
+                           to happen
+  --ignoring REGEX...      Ignore snapshots with names matching any of these
+                           regexes
+```
