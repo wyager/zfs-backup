@@ -117,7 +117,7 @@ Available options:
   --most-recent INT        Keep most recent N snapshots
   --also-keep HISTORY...   To keep 1 snapshot per month for the last 12 months,
                            use "12@1-per-month". To keep up to 10 snapshots a
-                           day, for the last 10 days, use "100@10-per-day", and
+                           day, for the last 5 days, use "50@10-per-day", and
                            so on. Can use day, month, year. Multiple of these
                            flags will result in all the specified snaps being
                            kept. This all works in UTC time, by the way. I'm not
