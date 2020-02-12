@@ -59,6 +59,9 @@ dependencies:
 - formatting
 - stm
 - ip
+- regex-tdfa
+- regex-tdfa-text # deprecated, but latest LTS doesn't have new enough regex-tdfa
+- regex-base
 
 library:
   source-dirs: src

@@ -19,10 +19,10 @@ import           Text.Printf          (printf)
 
 data DeleteError = Couldn'tPlan String deriving (Show, Ex.Exception)
 
-cleanup :: Remotable FilesystemName -> Maybe Int -> [History] -> Bool -> IO ()
-cleanup filesystem mostRecent alsoKeep dryRun = do
+cleanup :: Remotable FilesystemName -> Maybe Int -> [History] -> Bool -> (SnapshotName -> Bool) -> IO ()
+cleanup filesystem mostRecent alsoKeep dryRun excluding = do
     let remote = remotable Nothing Just filesystem
-    snaps <- either Ex.throw (return . snapshots) =<< list remote
+    snaps <- either Ex.throw (return . snapshots) =<< list remote excluding
     plan <- either (Ex.throw . Couldn'tPlan) return $ planDeletion (thing filesystem) snaps (maybe 0 id mostRecent) alsoKeep
     putStrLn $ prettyDeletePlan plan
     unless dryRun $ executeDeletePlan remote plan

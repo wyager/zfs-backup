@@ -13,12 +13,12 @@ import           Lib.ZFS               (FilesystemName, GUID, SnapSet,
 import           System.IO             (Handle, hClose)
 import qualified System.Process.Typed  as P
 
-copy ::  Remotable FilesystemName ->  Remotable FilesystemName -> Bool -> Bool -> Bool -> IO ()
-copy src dst sendCompressed sendRaw dryRun = do
+copy ::  Remotable FilesystemName ->  Remotable FilesystemName -> Bool -> Bool -> Bool -> (SnapshotName -> Bool) -> IO ()
+copy src dst sendCompressed sendRaw dryRun excluding = do
     let srcRemote = remotable Nothing Just src
         dstRemote = remotable Nothing Just dst
-    srcSnaps <- either Ex.throw (return . snapshots) =<< list srcRemote
-    dstSnaps <- either Ex.throw (return . snapshots) =<< list dstRemote
+    srcSnaps <- either Ex.throw (return . snapshots) =<< list srcRemote excluding
+    dstSnaps <- either Ex.throw (return . snapshots) =<< list dstRemote excluding
     case copyPlan (thing src) srcSnaps (thing dst) dstSnaps of
         Left err -> print err
         Right plan -> if dryRun
