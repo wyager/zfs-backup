@@ -6,6 +6,8 @@ This is a simple tool for:
 
 ## Installation
 
+Install [stack](https://haskellstack.org).
+
 Clone this repo and run `stack install`.
 
 ## Usage
