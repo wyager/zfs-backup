@@ -4,6 +4,10 @@ This is a simple tool for:
 * Synchronizing ZFS snapshots to local or remote backup targets
 * Cleaning out old snapshots
 
+The guiding principles of this tool are:
+* Be simple
+* Only do obvious things
+
 ## Installation
 
 Install [stack](https://haskellstack.org).
