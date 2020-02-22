@@ -150,7 +150,6 @@ copyPlan srcFS src dstFS dst =
                     (initial:_) -> do
                         (initialGUID,_) <- single initial
                         when (latestDstGUID /= initialGUID) (Left "Error: Initial sync GUID mismatch")
-                -- TODO: Ensure starting GUIDs match (use _latestDstGUID)
                 steps <- zipWithM (\as bs -> do
                     (_aGUID,aName) <- single as
                     (_bGUID,bName) <- single bs

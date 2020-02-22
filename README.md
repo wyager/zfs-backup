@@ -5,8 +5,8 @@ This is a simple tool for:
 * Cleaning out old snapshots
 
 The guiding principles of this tool are:
-* Be simple
 * Only do obvious things
+* If something is weird or not obvious, fail gracefully and let the user deal with it
 
 ## Installation
 
@@ -50,14 +50,13 @@ zfs-backup copy-snapshots --src tank/my_files --dst someuser@1234.zfs.rsync.net:
 
 ```bash
 # You specify how many backups you want to keep on a given schedule.
-# In this case, we keep the last 10 snapshots, one week of daily snapshots,
-# and 5 months worth of snapshots at 4 per month. 
-zfs-backup cleanup-snapshots --filesystem tank/my_files --most-recent 10 --also-keep 7@1-per-day --also-keep 20@4-per-month
-# Our remote backup keeps 1000 hourly snapshots and 10 years of quarterly snapshots
-zfs-backup cleanup-snapshots --filesystem someuser@1234.zfs.rsync.net:data1/my_backup --also-keep 1000@24-per-day --also-keep 40@4-per-year
+# In this case, we keep the last 10 snapshots and one week of daily snapshots
+zfs-backup cleanup-snapshots --filesystem tank/my_files --most-recent 10 --also-keep 7@1-per-day
+# Our remote backup keeps everything from the last 2 weeks and 10 years of quarterly snapshots
+zfs-backup cleanup-snapshots --filesystem someuser@1234.zfs.rsync.net:data1/my_backup --also-keep 14-days --also-keep 40@4-per-year
 ```
 
-This tool tries to be keep it pretty simple. Under the hood, it shells out to `ssh` and `zfs` to figure out what it needs to know and do all the heavy lifting.
+This tool tries to be keep it pretty simple. Under the hood, it shells out to `ssh` and `zfs`.
 
 All of the time-related operations (like splitting a month up into `n` parts) happen in UTC and don't depend on any external factors (current time, local time zone, etc.) so that they're predictable and repeatable.
 
@@ -123,11 +122,12 @@ Available options:
   --most-recent INT        Keep most recent N snapshots
   --also-keep HISTORY...   To keep 1 snapshot per month for the last 12 months,
                            use "12@1-per-month". To keep up to 10 snapshots a
-                           day, for the last 5 days, use "50@10-per-day", and
-                           so on. Can use day, month, year. Multiple of these
-                           flags will result in all the specified snaps being
-                           kept. This all works in UTC time, by the way. I'm not
-                           dealing with time zones.
+                           day, for the last 10 days, use "100@10-per-day", and
+                           so on. To keep everything in the last 1.7 years, use
+                           "1.7-years". Can use day, month, year. Multiple of
+                           these flags will result in all the specified snaps
+                           being kept. This all works in UTC time, by the way.
+                           I'm not dealing with time zones.
   --dry-run                Don't actually do anything, just print what's going
                            to happen
   --ignoring REGEX...      Ignore snapshots with names matching any of these
