@@ -2,9 +2,7 @@
 
 This is a simple but flexible tool for:
 * Synchronizing ZFS snapshots between local or remote filesystems
-  * Supports both SSH and local access
 * Cleaning out old snapshots
-  * Has a simple, robust, and flexible scheduling mechanism
 
 The guiding principles of this tool are:
 * Unix philosophy
