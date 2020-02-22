@@ -1,4 +1,4 @@
-module Lib.Units(TimeUnit(..),Period(..),History(..),binBy) where
+module Lib.Units(TimeUnit(..),Period(..),History(..),binBy,approximateDiffTime) where
 import           Lib.Common           (HasParser, parser, unWithParser)
 
 import           Control.Applicative  ((<|>))
@@ -7,11 +7,21 @@ import           Data.Map.Strict      (Map)
 import qualified Data.Map.Strict      as Map
 import           Data.Ratio           ((%))
 import qualified Data.Time.Calendar   as Cal
-import           Data.Time.Clock      (UTCTime (UTCTime))
+import           Data.Time.Clock      (UTCTime (UTCTime), NominalDiffTime, nominalDay)
 import qualified Data.Time.Clock      as Clock
 import           Options.Generic      (ParseField, readField)
 
 data TimeUnit = Day | Month | Year deriving (Eq,Ord)
+
+approximateDiffTime :: TimeUnit -> NominalDiffTime
+approximateDiffTime = 
+    let d = nominalDay in
+    let m = 31 * d in 
+    let y = 12 * m in 
+    \case 
+        Day -> d
+        Month -> m
+        Year -> y
 
 instance Show TimeUnit where
     show Day   = "day"
@@ -30,13 +40,18 @@ instance Show Period where
 instance HasParser Period where
     parser = Period <$> A.decimal <*> ("-per-" *> parser)
 
-data History = History Int Period
+data History = Sample {countPer :: Int, period :: Period}
+             | EverythingFor {howMany :: Rational, unit :: TimeUnit}
 
 instance Show History where
-    show (History count period) = show count ++ "@" ++ show period
+    show (Sample countPer period) = show countPer ++ "@" ++ show period
+    show (EverythingFor howMany unit) = show howMany ++ "-" ++ show unit ++ "s"
 
 instance HasParser History where
-    parser = History <$> A.decimal <*> ("@" *> parser)
+    parser = sample <|> everything
+        where
+        sample = Sample <$> A.decimal <*> ("@" *> parser)
+        everything = EverythingFor <$> A.rational <*> ("-" *> parser <* "s")
 
 instance ParseField History where
     readField = unWithParser <$> readField

@@ -6,11 +6,10 @@ import           Data.Map.Strict      (Map)
 import qualified Data.Map.Strict      as Map
 import           Data.Set             (Set)
 import qualified Data.Set             as Set
-import           Data.Time.Clock      (UTCTime)
+import           Data.Time.Clock      (UTCTime, getCurrentTime, addUTCTime)
 import           Lib.Common           (Remotable, SSHSpec, remotable, thing)
 import           Lib.Command.List     (list)
-import           Lib.Units            (binBy)
-import           Lib.Units            (History (..), Period (..))
+import           Lib.Units            (History (..), Period (..), binBy, approximateDiffTime)
 import           Lib.ZFS              (FilesystemName, SnapSet,
                                        SnapshotName (..), byDate, single,
                                        snapshots, withFS)
@@ -23,7 +22,8 @@ cleanup :: Remotable FilesystemName -> Maybe Int -> [History] -> Bool -> (Snapsh
 cleanup filesystem mostRecent alsoKeep dryRun excluding = do
     let remote = remotable Nothing Just filesystem
     snaps <- either Ex.throw (return . snapshots) =<< list remote excluding
-    plan <- either (Ex.throw . Couldn'tPlan) return $ planDeletion (thing filesystem) snaps (maybe 0 id mostRecent) alsoKeep
+    now <- getCurrentTime
+    plan <- either (Ex.throw . Couldn'tPlan) return $ planDeletion now (thing filesystem) snaps (maybe 0 id mostRecent) alsoKeep
     putStrLn $ prettyDeletePlan plan
     unless dryRun $ executeDeletePlan remote plan
 
@@ -45,18 +45,23 @@ prettyDeletePlan (DeletePlan delete keep) = concat
     ]
 
 
-planDeletion :: FilesystemName -> SnapSet -> Int -> [History] -> Either String DeletePlan
-planDeletion fsName snapSet mostRecentN histories = do
+planDeletion :: UTCTime -> FilesystemName -> SnapSet -> Int -> [History] -> Either String DeletePlan
+planDeletion now fsName snapSet mostRecentN histories = do
     inOrder :: Map UTCTime SnapshotName <- mapM (second snd . single) $ byDate $ withFS fsName snapSet
     let mostRecent = Set.fromList $ map snd $ take mostRecentN $ Map.toDescList inOrder
-    let keepHistories = Set.unions $ map (keepHistory inOrder) histories
+    let keepHistories = Set.unions $ map (keepHistory now inOrder) histories
     let toKeep = Set.union keepHistories mostRecent
     let toDelete = (Set.fromList $ Map.elems inOrder) `Set.difference` toKeep
     return (DeletePlan toDelete toKeep)
 
 
-keepHistory :: forall v . (Ord v) => Map UTCTime v -> History -> Set v
-keepHistory snaps (History count (Period frac timeUnit)) = Set.fromList $ take count best
+keepHistory :: forall v . (Ord v) => UTCTime ->  Map UTCTime v -> History -> Set v
+keepHistory now snaps (EverythingFor howMany unit) = Set.fromList (Map.elems newer)
+    where
+    difference = approximateDiffTime unit * fromRational howMany
+    startTime = negate difference `addUTCTime` now
+    (_older, newer) = Map.split startTime snaps
+keepHistory _   snaps (Sample count (Period frac timeUnit)) = Set.fromList $ take count best
     where
     -- Outer map - "Base time" (e.g. day boundaries if time unit is day)
     -- Middle map - Start of each bin
