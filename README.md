@@ -1,16 +1,20 @@
 # zfs-backup
 
-This is a simple tool for:
-* Synchronizing ZFS snapshots to local or remote backup targets
+This is a simple but flexible tool for:
+* Synchronizing ZFS snapshots between local or remote filesystems
+  * Supports both SSH and local access
 * Cleaning out old snapshots
+  * Has a simple, robust, and flexible scheduling mechanism
 
 The guiding principles of this tool are:
-* Only do obvious things
+* Unix philosophy
 * If something is weird or not obvious, fail gracefully and let the user deal with it
 
 ## Installation
 
-Install [stack](https://haskellstack.org).
+This tool is written in Haskell.
+
+Install [Stack](https://haskellstack.org).
 
 Clone this repo and run `stack install`.
 
@@ -52,17 +56,19 @@ zfs-backup copy-snapshots --src tank/my_files --dst someuser@1234.zfs.rsync.net:
 # You specify how many backups you want to keep on a given schedule.
 # In this case, we keep the last 10 snapshots and one week of daily snapshots
 zfs-backup cleanup-snapshots --filesystem tank/my_files --most-recent 10 --also-keep 7@1-per-day
-# Our remote backup keeps everything from the last 2 weeks and 10 years of quarterly snapshots
-zfs-backup cleanup-snapshots --filesystem someuser@1234.zfs.rsync.net:data1/my_backup --also-keep 14-days --also-keep 40@4-per-year
+# Our remote backup keeps everything from the last 6 months and 10 years of quarterly snapshots
+zfs-backup cleanup-snapshots --filesystem someuser@1234.zfs.rsync.net:data1/my_backup --also-keep 6-months --also-keep 40@4-per-year
 ```
 
 This tool tries to be keep it pretty simple. Under the hood, it shells out to `ssh` and `zfs`.
 
-All of the time-related operations (like splitting a month up into `n` parts) happen in UTC and don't depend on any external factors (current time, local time zone, etc.) so that they're predictable and repeatable.
+All of the time-related operations (like splitting a month up into `n` parts) happen in UTC. None of these operations depend on the current time zone.
 
-The tool uses snapshots' `creation` and `guid` metadata to identify them, so you can feel free to use whatever naming scheme you like.
+Sampling snapshots (e.g. `10@5-per-day`) do not depend on the current time, so they are stable and consistent across time.
 
-The tool is pretty fast during transfers (not that it has to do much work) - it can handle about 3GB/sec on my laptop, which is faster than any ZFS filesystem I've seen, even on NVMe SSDs, so that probably won't be an issue for anyone.
+The tool uses snapshots' `creation` time and `guid` to identify them, so you can feel free to use whatever naming scheme you like.
+
+The tool is pretty fast during transfers (not that it has to do much work) - it can handle about 3GB/sec on my laptop, so that probably won't be an issue for anyone.
 
 
 ## Help Text
