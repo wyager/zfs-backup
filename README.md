@@ -5,7 +5,7 @@ This is a simple but flexible tool for:
 * Cleaning out old snapshots
 
 The guiding principles of this tool are:
-* Unix philosophy
+* Don't be complicated
 * If something is weird or not obvious, fail gracefully and let the user deal with it
 
 ## Installation
