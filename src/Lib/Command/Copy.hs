@@ -57,7 +57,7 @@ executeCopyPlan sndSpec rcvSpec sndOpts plan recursive = case plan of
     where
     goWith step dstFs = do
         let (sndExe,sndArgs) = sendCommand sndSpec sndOpts step recursive
-        let (rcvExe,rcvArgs) = recCommand rcvSpec dstFs step
+        let (rcvExe,rcvArgs) = recCommand rcvSpec dstFs step recursive
         let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ P.proc sndExe sndArgs
         let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
         printProgress ("Copying to " ++ show dstFs) $ \progress -> oneStep progress sndProc rcvProc
@@ -73,12 +73,13 @@ sendArgs opts send recursive = ["send"] ++ sendOptArgs opts ++ if recursive then
         Right (IncrStep startName stopName) -> ["-i", show startName, show stopName]
         Left snap -> [show snap]
 
-recvArgs :: FilesystemName -> Either SnapshotName IncrStep -> [String]
-recvArgs dstFS send =
+recvArgs :: FilesystemName -> Either SnapshotName IncrStep -> Bool -> [String]
+recvArgs dstFS send recursive =
         let snap =  case send of
                 Right (IncrStep _ (SnapshotName _fs s)) -> s
                 Left (SnapshotName _fs s)               -> s
-        in ["receive", "-u", show $ SnapshotName dstFS snap]
+            target = if recursive then (show dstFS) else (show $ SnapshotName dstFS snap)
+        in ["receive", "-u", target]
 
 
 
@@ -93,10 +94,10 @@ sendCommand ssh opts snap recursive = case ssh of
     Nothing   -> ("zfs", sendArgs opts snap recursive)
     Just spec -> ("ssh", [show spec, "zfs"] ++ sendArgs opts snap recursive)
 
-recCommand :: Maybe SSHSpec -> FilesystemName -> Either SnapshotName IncrStep -> (String, [String])
-recCommand ssh dstFs snap = case ssh of
-    Nothing   -> ("zfs", recvArgs dstFs snap)
-    Just spec -> ("ssh", [show spec, "zfs"] ++ recvArgs dstFs snap)
+recCommand :: Maybe SSHSpec -> FilesystemName -> Either SnapshotName IncrStep -> Bool -> (String, [String])
+recCommand ssh dstFs snap recursive = case ssh of
+    Nothing   -> ("zfs", recvArgs dstFs snap recursive)
+    Just spec -> ("ssh", [show spec, "zfs"] ++ recvArgs dstFs snap recursive)
 
 data SendOptions = SendOptions
     { sendCompressedOpt :: Bool
@@ -116,11 +117,11 @@ formatCommand (cmd, args) = intercalate " " (cmd : args)
 
 showShell :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions ->  Bool -> CopyPlan -> String
 showShell _ _ _ _ CopyNada = "true"
-showShell send rcv opts recursive (FullCopy _ snap dstFs) = formatCommand (sendCommand send opts (Left snap) recursive) ++ " | pv | " ++ formatCommand (recCommand rcv dstFs (Left snap))
+showShell send rcv opts recursive (FullCopy _ snap dstFs) = formatCommand (sendCommand send opts (Left snap) recursive) ++ " | pv | " ++ formatCommand (recCommand rcv dstFs (Left snap) recursive)
 showShell send rcv opts recursive (Incremental startDstSnap steps)
     = concat $ map (\step ->
         formatCommand (sendCommand send opts (Right step) recursive) ++ " | pv | " ++
-        formatCommand (recCommand rcv (snapshotFSOf startDstSnap) (Right step)) ++ "\n")
+        formatCommand (recCommand rcv (snapshotFSOf startDstSnap) (Right step) recursive) ++ "\n")
         steps
 
 prettyPlan :: CopyPlan -> String
