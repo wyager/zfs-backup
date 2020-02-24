@@ -69,7 +69,7 @@ data IncrStep = IncrStep {
     }   deriving Show
 
 sendArgs :: SendOptions -> Either SnapshotName IncrStep -> Bool -> [String]
-sendArgs opts send recursive = ["send"] ++ sendOptArgs opts ++ if recursive then ["-R"] else [] ++ case send of
+sendArgs opts send recursive = ["send"] ++ sendOptArgs opts ++ (if recursive then ["-R"] else []) ++ case send of
         Right (IncrStep startName stopName) -> ["-i", show startName, show stopName]
         Left snap -> [show snap]
 
