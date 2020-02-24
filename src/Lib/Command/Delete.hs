@@ -18,18 +18,18 @@ import           Text.Printf          (printf)
 
 data DeleteError = Couldn'tPlan String deriving (Show, Ex.Exception)
 
-cleanup :: Remotable FilesystemName -> Maybe Int -> [History] -> Bool -> (SnapshotName -> Bool) -> IO ()
-cleanup filesystem mostRecent alsoKeep dryRun excluding = do
+cleanup :: Remotable FilesystemName -> Maybe Int -> [History] -> Bool -> (SnapshotName -> Bool) -> Bool -> IO ()
+cleanup filesystem mostRecent alsoKeep dryRun excluding recursive = do
     let remote = remotable Nothing Just filesystem
     snaps <- either Ex.throw (return . snapshots) =<< list remote excluding
     now <- getCurrentTime
     plan <- either (Ex.throw . Couldn'tPlan) return $ planDeletion now (thing filesystem) snaps (maybe 0 id mostRecent) alsoKeep
-    putStrLn $ prettyDeletePlan plan
-    unless dryRun $ executeDeletePlan remote plan
+    putStrLn $ prettyDeletePlan plan recursive
+    unless dryRun $ executeDeletePlan remote plan recursive
 
-executeDeletePlan :: Maybe SSHSpec -> DeletePlan -> IO ()
-executeDeletePlan delSpec DeletePlan{..} = flip mapM_ toDelete $ \snapshot -> do
-    let (delExe, delArgs) = deleteCommand delSpec snapshot
+executeDeletePlan :: Maybe SSHSpec -> DeletePlan -> Bool -> IO ()
+executeDeletePlan delSpec DeletePlan{..} recursive = flip mapM_ toDelete $ \snapshot -> do
+    let (delExe, delArgs) = deleteCommand delSpec snapshot recursive
     let delProc = P.setStdin P.closed $ P.proc delExe delArgs
     print delProc
     P.withProcessWait_ delProc $ \_del -> return ()
@@ -37,12 +37,12 @@ executeDeletePlan delSpec DeletePlan{..} = flip mapM_ toDelete $ \snapshot -> do
 
 data DeletePlan = DeletePlan {toDelete :: Set SnapshotName, toKeep :: Set SnapshotName} deriving Show
 
-prettyDeletePlan :: DeletePlan -> String
-prettyDeletePlan (DeletePlan delete keep) = concat
-    [ printf "Deleting %i snaps\n" (length delete)
+prettyDeletePlan :: DeletePlan -> Bool -> String
+prettyDeletePlan (DeletePlan delete keep) recursive = concat
+    ([ printf "Deleting %i snaps\n" (length delete)
     , printf "Keeping %i snaps:\n" (length keep)
     , concatMap (printf "  %s\n" . show) (Set.toList keep)
-    ]
+    ] ++ if recursive then ["Operating in recursive mode (destroy -r)\n"] else [])
 
 
 planDeletion :: UTCTime -> FilesystemName -> SnapSet -> Int -> [History] -> Either String DeletePlan
@@ -76,7 +76,7 @@ keepHistory _   snaps (Sample count (Period frac timeUnit)) = Set.fromList $ tak
             Nothing    -> []
             Just (v,_) -> [v]
 
-deleteCommand :: Maybe SSHSpec -> SnapshotName -> (String, [String])
-deleteCommand ssh snap = case ssh of
-    Nothing   -> ("zfs", ["destroy", show snap])
-    Just spec -> ("ssh", [show spec, "zfs", "destroy", show snap])
+deleteCommand :: Maybe SSHSpec -> SnapshotName -> Bool -> (String, [String])
+deleteCommand ssh snap recursive = case ssh of
+    Nothing   -> ("zfs", ["destroy", show snap] ++ if recursive then ["-r"] else [])
+    Just spec -> ("ssh", [show spec, "zfs", "destroy", show snap] ++ if recursive then ["-r"] else [])
