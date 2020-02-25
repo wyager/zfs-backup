@@ -105,19 +105,18 @@ formatCommand (cmd, args) = intercalate " " (cmd : args)
 
 showShell :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions ->  Bool -> CopyPlan -> String
 showShell _ _ _ _ CopyNada = "true"
-showShell send rcv opts recursive (FullCopy _ snap dstFs) = formatCommand (sendCommand send opts (Left snap) recursive) ++ " | pv | " ++ formatCommand (recCommand rcv dstFs  recursive)
-showShell send rcv opts recursive (Incremental startDstSnap steps)
-    = concat $ map (\step ->
-        formatCommand (sendCommand send opts (Right step) recursive) ++ " | pv | " ++
-        formatCommand (recCommand rcv (snapshotFSOf startDstSnap)  recursive) ++ "\n")
-        steps
+showShell send rcv opts recursive (FullCopy _ snap dstFs) = formatCommand (sendCommand send opts Nothing snap recursive) ++ " | pv | " ++ formatCommand (recCommand rcv dstFs  recursive)
+showShell send rcv opts recursive (Incremental start stop)
+    = 
+        formatCommand (sendCommand send opts (Just start) stop recursive) ++ " | pv | " ++
+        formatCommand (recCommand rcv (snapshotFSOf start) recursive) ++ "\n"
+        
 
 prettyPlan :: CopyPlan -> String
 prettyPlan CopyNada = "Do Nothing"
 prettyPlan (FullCopy _ name _) = "Full copy: " ++ show name
-prettyPlan (Incremental dstInit steps) = "Incremental copy. Starting from " ++ show dstInit ++ " on dest.\n" ++ concatMap prettyStep steps
-    where
-    prettyStep (IncrStep startName stopName) = show startName ++ " -> " ++ show stopName ++ "\n"
+prettyPlan (Incremental start stop) = "Incremental copy. Starting from " ++ show start ++ " on dest to " ++ show stop
+
 instance Show CopyPlan where
     show = prettyPlan
 
@@ -142,8 +141,8 @@ copyPlan srcFS src dstFS dst =
                     let error = "Error: Most recent snap(s) on destination don't exist on source. "
                         help = "Solution: on dest, run: zfs rollback -r " ++ show latestBothName
                         notice = " This will destroy most recent snaps on destination."
-                    Left (error + help + notice)	
-                Right $ Incremental latestDstName latest
+                    Left (error ++ help ++ notice)	
+                Right $ Incremental latestDstName latestSrcName
     where
     relevantOnSrc = withFS srcFS src
     relevantOnDst = withFS dstFS dst 
