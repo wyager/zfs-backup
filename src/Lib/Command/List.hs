@@ -13,21 +13,21 @@ import qualified System.Process.Typed   as P
 
 data ListError = CommandError ByteString | ZFSListParseError String deriving (Show, Ex.Exception)
 
-listPrint :: Maybe SSHSpec -> (SnapshotName -> Bool) -> IO ()
+listPrint :: Maybe SSHSpec -> (SnapshotName sys -> Bool) -> IO ()
 listPrint host excluding = list host excluding >>= either Ex.throw (mapM_ print)
 
-list :: Maybe SSHSpec -> (SnapshotName -> Bool) -> IO (Either ListError [Object])
+list :: Maybe SSHSpec -> (SnapshotName sys -> Bool) -> IO (Either ListError [Object sys])
 list host excluding = listWith excluding $ case host of 
     Nothing -> localCmd
     Just spec -> sshCmd spec
 
-filterWith :: (SnapshotName -> Bool) -> [Object] -> [Object]
+filterWith :: (SnapshotName sys -> Bool) -> [Object sys] -> [Object sys]
 filterWith excluding = filter (not . excluded)
     where
     excluded (Snapshot snap _meta) = excluding snap
     excluded _ = False 
 
-listWith :: (SnapshotName -> Bool) -> P.ProcessConfig () () () -> IO (Either ListError [Object])
+listWith :: (SnapshotName sys -> Bool) -> P.ProcessConfig () () () -> IO (Either ListError [Object sys])
 listWith excluding cmd = do
     output <- P.withProcessWait (allOutputs cmd) $ \proc -> do
         output <- fmap (TE.decodeUtf8 . LBS.toStrict) $ atomically $ P.getStdout proc

@@ -1,5 +1,5 @@
 
-module Lib.Common(HasParser, parser, unWithParser, Host(..), SSHSpec(..), Remotable(..), thing, remotable) where
+module Lib.Common(HasParser, parser, unWithParser, Host(..), SSHSpec(..), Remotable(..), thing, remotable, Src, Dst) where
 
 import           Control.Applicative  ((<|>))
 import qualified Data.Attoparsec.Text as A
@@ -13,6 +13,9 @@ import qualified Net.IPv6             as IP6
 import qualified Options.Applicative  as Opt
 import           Options.Generic      (Only (fromOnly), ParseField, ParseFields,
                                        ParseRecord, parseRecord, readField)
+
+data Dst
+data Src
 
 class HasParser a where
     parser :: A.Parser a

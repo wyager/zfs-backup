@@ -1,19 +1,19 @@
 module Lib.Command.Copy (copy,speedTest) where
 import qualified Control.Exception     as Ex
-import           Control.Monad         (when, zipWithM)
+import           Control.Monad         (when)
 import qualified Data.ByteString.Char8 as BS
 import           Data.List             (intercalate)
 import qualified Data.Map.Strict       as Map
-import           Lib.Common            (Remotable, SSHSpec, remotable, thing)
+import           Lib.Common            (Remotable, SSHSpec, remotable, thing, Src, Dst)
 import           Lib.Command.List      (list)
 import           Lib.Progress          (printProgress)
-import           Lib.ZFS               (FilesystemName, GUID, SnapSet,
+import           Lib.ZFS               (FilesystemName, SnapSet,
                                         SnapshotName (..), byDate, presentIn,
                                         single, snapshots, withFS)
 import           System.IO             (Handle, hClose)
 import qualified System.Process.Typed  as P
 
-copy ::  Remotable FilesystemName ->  Remotable FilesystemName -> Bool -> Bool -> Bool -> (SnapshotName -> Bool) -> Bool -> IO ()
+copy ::  Remotable (FilesystemName Src) ->  Remotable (FilesystemName Dst) -> Bool -> Bool -> Bool -> (forall sys . SnapshotName sys -> Bool) -> Bool -> IO ()
 copy src dst sendCompressed sendRaw dryRun excluding recursive = do
     let srcRemote = remotable Nothing Just src
         dstRemote = remotable Nothing Just dst
@@ -51,41 +51,40 @@ oneStep progress sndProc rcvProc = do
 executeCopyPlan :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions -> CopyPlan -> Bool -> IO ()
 executeCopyPlan sndSpec rcvSpec sndOpts plan recursive = case plan of
     CopyNada -> putStrLn "Nothing to do"
-    FullCopy _guid snap dstFs -> goWith Nothing snap dstFs
-    Incremental start stop -> goWith (Just start) stop (snapshotFSOf start)
+    FullCopy snap dstFs -> goWith Nothing snap dstFs
+    Incremental start stop dstFs -> goWith (Just start) stop dstFs
     where
     goWith start stop dstFs = do
         let (sndExe,sndArgs) = sendCommand sndSpec sndOpts start stop recursive
-        let (rcvExe,rcvArgs) = recCommand rcvSpec dstFs recursive
+        let (rcvExe,rcvArgs) = recCommand rcvSpec dstFs
         let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ P.proc sndExe sndArgs
         let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
         printProgress ("Copying to " ++ show dstFs) $ \progress -> oneStep progress sndProc rcvProc
 
-sendArgs :: SendOptions -> Maybe SnapshotName -> SnapshotName -> Bool -> [String]
+sendArgs :: SendOptions -> Maybe (SnapshotName Src) -> SnapshotName Src -> Bool -> [String]
 sendArgs opts start stop recursive = ["send"] ++ sendOptArgs opts ++ (if recursive then ["-R"] else []) ++ case start of
-        Just start -> ["-I", show start, show stop]
+        Just startFs -> ["-I", show startFs, show stop]
         Nothing -> [show stop]
 
-recvArgs :: FilesystemName -> Bool -> [String]
-recvArgs dstFS recursive = ["receive", "-u", show dstFS]
-
+recvArgs :: FilesystemName Dst -> [String]
+recvArgs dstFS = ["receive", "-u", show dstFS]
 
 
 
 data CopyPlan
     = CopyNada
-    | FullCopy GUID SnapshotName FilesystemName
-    | Incremental  SnapshotName SnapshotName
+    | FullCopy (SnapshotName Src) (FilesystemName Dst)
+    | Incremental (SnapshotName Src) (SnapshotName Src) (FilesystemName Dst)
 
-sendCommand :: Maybe SSHSpec -> SendOptions -> Maybe SnapshotName -> SnapshotName -> Bool -> (String, [String])
+sendCommand :: Maybe SSHSpec -> SendOptions -> Maybe (SnapshotName Src) -> SnapshotName Src -> Bool -> (String, [String])
 sendCommand ssh opts start stop recursive = case ssh of
     Nothing   -> ("zfs", sendArgs opts start stop recursive)
     Just spec -> ("ssh", [show spec, "zfs"] ++ sendArgs opts start stop recursive)
 
-recCommand :: Maybe SSHSpec -> FilesystemName ->  Bool -> (String, [String])
-recCommand ssh dstFs recursive = case ssh of
-    Nothing   -> ("zfs", recvArgs dstFs recursive)
-    Just spec -> ("ssh", [show spec, "zfs"] ++ recvArgs dstFs recursive)
+recCommand :: Maybe SSHSpec -> FilesystemName Dst -> (String, [String])
+recCommand ssh dstFs = case ssh of
+    Nothing   -> ("zfs", recvArgs dstFs)
+    Just spec -> ("ssh", [show spec, "zfs"] ++ recvArgs dstFs)
 
 data SendOptions = SendOptions
     { sendCompressedOpt :: Bool
@@ -105,48 +104,47 @@ formatCommand (cmd, args) = intercalate " " (cmd : args)
 
 showShell :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions ->  Bool -> CopyPlan -> String
 showShell _ _ _ _ CopyNada = "true"
-showShell send rcv opts recursive (FullCopy _ snap dstFs) = formatCommand (sendCommand send opts Nothing snap recursive) ++ " | pv | " ++ formatCommand (recCommand rcv dstFs  recursive)
-showShell send rcv opts recursive (Incremental start stop)
-    = 
-        formatCommand (sendCommand send opts (Just start) stop recursive) ++ " | pv | " ++
-        formatCommand (recCommand rcv (snapshotFSOf start) recursive) ++ "\n"
+showShell send rcv opts recursive (FullCopy snap dstFs) = formatCommand (sendCommand send opts Nothing snap recursive) ++ " | pv | " ++ formatCommand (recCommand rcv dstFs)
+showShell send rcv opts recursive (Incremental start stop dstFs)
+    = formatCommand (sendCommand send opts (Just start) stop recursive) ++ " | pv | " ++
+      formatCommand (recCommand rcv dstFs) ++ "\n"
         
 
 prettyPlan :: CopyPlan -> String
 prettyPlan CopyNada = "Do Nothing"
-prettyPlan (FullCopy _ name _) = "Full copy: " ++ show name
-prettyPlan (Incremental start stop) = "Incremental copy. Starting from " ++ show start ++ " on dest to " ++ show stop
+prettyPlan (FullCopy name _dstFs) = "Full copy: " ++ show name
+prettyPlan (Incremental start stop _dstFs) = "Incremental copy. Starting from " ++ show start ++ " on dest to " ++ show stop
 
 instance Show CopyPlan where
     show = prettyPlan
 
 
-copyPlan :: FilesystemName -> SnapSet -> FilesystemName -> SnapSet -> Either String CopyPlan
+copyPlan :: FilesystemName Src -> SnapSet Src -> FilesystemName Dst -> SnapSet Dst -> Either String CopyPlan
 copyPlan srcFS src dstFS dst =
     case Map.lookupMax dstByDate of
             Nothing -> case Map.lookupMax srcByDate  of
                 Nothing -> Right CopyNada -- No backups to copy over!
                 Just (_date, srcSnaps) -> do
-                    (guid,name) <- single srcSnaps
-                    Right (FullCopy guid name dstFS)
-            Just (latestDstDate, dstSnaps) ->  do
-                (latestDstGUID, latestDstName) <- single dstSnaps
+                    (_guid,name) <- single srcSnaps
+                    Right (FullCopy name dstFS)
+            Just (_latestDstDate, dstSnaps) ->  do
+                (latestDstGUID, _latestDstName) <- single dstSnaps
                 (_latestSrcGUID, latestSrcName) <- case Map.lookupMax srcByDate  of
                     Nothing -> Left "Error: Snaphots exist on dest, but not source"
                     Just (_date, srcSnaps) -> single srcSnaps
-	        (latestBothGUID, latestBothName) <- case Map.lookupMax bothByDate of
+                (latestBothGUID, latestBothName) <- case Map.lookupMax bothByDate of
                     Nothing -> Left "There are no snaps that exist on both source and destination"
                     Just (_date, bothSnaps) -> single bothSnaps
                 when (latestDstGUID /= latestBothGUID) $ do
-                    let error = "Error: Most recent snap(s) on destination don't exist on source. "
+                    let issue = "Error: Most recent snap(s) on destination don't exist on source. "
                         help = "Solution: on dest, run: zfs rollback -r " ++ show latestBothName
-                        notice = " This will destroy most recent snaps on destination."
-                    Left (error ++ help ++ notice)	
-                Right $ Incremental latestDstName latestSrcName
+                        notice = " . This will destroy the most recent snaps on destination."
+                    Left (issue ++ help ++ notice)
+                Right $ Incremental latestBothName latestSrcName dstFS
     where
     relevantOnSrc = withFS srcFS src
     relevantOnDst = withFS dstFS dst 
-    onBoth = relevantOnDst `presentIn` relevantOnSrc
+    onBoth = relevantOnSrc `presentIn` relevantOnDst
     srcByDate = byDate relevantOnSrc
     dstByDate = byDate relevantOnDst
     bothByDate = byDate onBoth
