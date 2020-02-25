@@ -1,4 +1,4 @@
-module Lib.ZFS (Size, PoolName, GUID, ObjectMeta(..), Object(..), FilesystemName(..), SnapshotName(..), objects, listShellCmd, SnapSet, snapshots, withFS, presentIn, byDate, single) where
+module Lib.ZFS (Size, PoolName, GUID, ObjectMeta(..), Object(..), FilesystemName(..), SnapshotIdentifier(..), SnapshotName(..), objects, listShellCmd, listSnapsShellCmd, ObjSet, snapshots, withFS, presentIn, byDate, single) where
 import           Lib.Common            (HasParser, parser, unWithParser)
 
 import           Control.Applicative   (many, (<|>))
@@ -54,16 +54,19 @@ instance Typeable sys => ParseField (FilesystemName sys) where
     readField = unWithParser <$> readField
 deriving anyclass instance Typeable sys => ParseFields (FilesystemName sys)
 
+newtype SnapshotIdentifier sys = SnapshotIdentifier {identifierOf :: Text} deriving (Eq,Ord)
+instance Show (SnapshotIdentifier sys) where
+    show (SnapshotIdentifier ident) = T.unpack ident
 
 
-data SnapshotName sys = SnapshotName {snapshotFSOf :: FilesystemName sys, snapshotNameOf :: Text} deriving (Eq,Ord)
+data SnapshotName sys = SnapshotName {snapshotFSOf :: FilesystemName sys, snapshotNameOf :: SnapshotIdentifier sys} deriving (Eq,Ord)
 instance Show (SnapshotName sys) where
-    show (SnapshotName fs snap) = show fs ++ "@" ++ T.unpack snap
+    show (SnapshotName fs snap) = show fs ++ "@" ++ show snap
 
 instance HasParser (SnapshotName sys) where
     parser = do
         snapshotFSOf <- parser
-        snapshotNameOf <- "@" *> A.takeWhile (not . A.inClass " \t")
+        snapshotNameOf <- SnapshotIdentifier <$> ("@" *> A.takeWhile (not . A.inClass " \t"))
         return SnapshotName{..}
 
 instance Typeable sys => ParseField (SnapshotName sys) where
@@ -90,34 +93,41 @@ seconds = posixSecondsToUTCTime . fromIntegral
 listShellCmd :: String
 listShellCmd = "zfs list -Hp -t all -o type,name,creation,guid,referenced,used"
 
-
-newtype SnapSet sys = SnapSet {getSnapSet :: Map GUID (Map (SnapshotName sys) ObjectMeta)} deriving (Show)
-
-snapshots :: [Object sys] -> SnapSet sys
-snapshots objs = SnapSet $ Map.fromListWith Map.union [(guidOf meta, Map.singleton name meta) | Snapshot name meta <- objs]
+listSnapsShellCmd :: FilesystemName sys -> String
+listSnapsShellCmd  fs = "zfs list -Hp -t snapshot -o type,name,creation,guid,referenced,used " ++ show fs
 
 
+newtype ObjSet name sys = ObjSet {getSnapSet :: Map GUID (Map (name sys) ObjectMeta)} deriving (Show)
 
 
-withFS :: FilesystemName sys -> SnapSet sys -> SnapSet sys
-withFS fsName (SnapSet snaps) =
-    SnapSet $ Map.filter (not . null) $ Map.map (Map.filterWithKey relevant) snaps
+-- newtype SnapSet sys = SnapSet {getSnapSet :: Map GUID (Map (SnapshotName sys) ObjectMeta)} deriving (Show)
+
+snapshots :: [Object sys] -> ObjSet SnapshotName sys
+snapshots objs = ObjSet $ Map.fromListWith Map.union [(guidOf meta, Map.singleton name meta) | Snapshot name meta <- objs]
+
+
+
+
+withFS :: forall sys . FilesystemName sys -> ObjSet SnapshotName sys -> ObjSet SnapshotIdentifier sys
+withFS fsName (ObjSet objs) =
+    ObjSet $ Map.filter (not . null) $ Map.map pullOutRelevant objs
     where
-    relevant name _meta = snapshotFSOf name == fsName
+    pullOutRelevant :: Map (SnapshotName sys) v -> Map (SnapshotIdentifier sys) v
+    pullOutRelevant snaps = Map.fromList [(ident,v) | (SnapshotName fs ident, v) <- Map.toList snaps, fs == fsName]
 
 
-presentIn :: SnapSet sys -> SnapSet sys2 -> SnapSet sys
-(SnapSet a) `presentIn` (SnapSet b) = SnapSet (Map.intersection a b)
+presentIn :: ObjSet k sys -> ObjSet k sys2 -> ObjSet k sys
+(ObjSet a) `presentIn` (ObjSet b) = ObjSet (Map.intersection a b)
 
 
-triplets :: SnapSet sys -> [(GUID, SnapshotName sys, UTCTime)]
-triplets (SnapSet snaps) = [(guid,name,creationOf meta) | (guid,snaps') <- Map.toList snaps, (name,meta) <- Map.toList snaps']
+triplets :: ObjSet name sys -> [(GUID, name sys, UTCTime)]
+triplets (ObjSet snaps) = [(guid,name,creationOf meta) | (guid,snaps') <- Map.toList snaps, (name,meta) <- Map.toList snaps']
 
-byDate :: SnapSet sys -> Map UTCTime (Set (GUID, SnapshotName sys))
+byDate :: Ord (name sys) => ObjSet name sys -> Map UTCTime (Set (GUID, name sys))
 byDate = Map.fromListWith Set.union . map (\(guid,name,time) -> (time,Set.singleton (guid,name))) . triplets
 
 
-single :: Set (GUID, SnapshotName sys) -> Either String (GUID, SnapshotName sys)
+single :: Show v => Set (GUID, v) -> Either String (GUID, v)
 single snaps = case Set.minView snaps of
     Nothing -> Left "Error: Zero available matching snaps. Bug?"
     Just (lowest,others) | null others -> Right lowest

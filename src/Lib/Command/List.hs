@@ -7,19 +7,19 @@ import           Data.ByteString        (ByteString)
 import qualified Data.ByteString.Lazy   as LBS
 import qualified Data.Text.Encoding     as TE
 import           Lib.Common             (SSHSpec)
-import           Lib.ZFS                (Object, listShellCmd, objects, Object(Snapshot), SnapshotName)
+import           Lib.ZFS                (Object, listShellCmd, listSnapsShellCmd, objects, Object(Snapshot), SnapshotName, FilesystemName)
 import           System.Exit            (ExitCode (ExitFailure, ExitSuccess))
 import qualified System.Process.Typed   as P
 
 data ListError = CommandError ByteString | ZFSListParseError String deriving (Show, Ex.Exception)
 
 listPrint :: Maybe SSHSpec -> (SnapshotName sys -> Bool) -> IO ()
-listPrint host excluding = list host excluding >>= either Ex.throw (mapM_ print)
+listPrint host excluding = list Nothing host excluding >>= either Ex.throw (mapM_ print)
 
-list :: Maybe SSHSpec -> (SnapshotName sys -> Bool) -> IO (Either ListError [Object sys])
-list host excluding = listWith excluding $ case host of 
-    Nothing -> localCmd
-    Just spec -> sshCmd spec
+list :: Maybe (FilesystemName sys) -> Maybe SSHSpec -> (SnapshotName sys -> Bool) -> IO (Either ListError [Object sys])
+list fs host excluding = listWith excluding $ case host of 
+    Nothing -> localCmd fs
+    Just spec -> sshCmd spec fs
 
 filterWith :: (SnapshotName sys -> Bool) -> [Object sys] -> [Object sys]
 filterWith excluding = filter (not . excluded)
@@ -39,11 +39,13 @@ listWith excluding cmd = do
 
 
 
-localCmd :: P.ProcessConfig () () ()
-localCmd = P.shell listShellCmd
+localCmd :: Maybe (FilesystemName sys) -> P.ProcessConfig () () ()
+localCmd = maybe (P.shell listShellCmd) (P.shell . listSnapsShellCmd) 
 
-sshCmd :: SSHSpec -> P.ProcessConfig () () ()
-sshCmd spec = P.shell $ "ssh " ++ show spec ++ " " ++ listShellCmd
+sshCmd :: SSHSpec -> Maybe (FilesystemName sys) -> P.ProcessConfig () () ()
+sshCmd spec fs = maybe (shell listShellCmd) (shell . listSnapsShellCmd) fs
+    where
+    shell = P.shell . (\cmd -> "ssh " ++ show spec ++ " " ++ cmd)
 
 allOutputs :: P.ProcessConfig () () () -> P.ProcessConfig () (STM LBS.ByteString) (STM LBS.ByteString)
 allOutputs command = P.setStdin P.closed $ P.setStdout P.byteStringOutput $ P.setStderr P.byteStringOutput command

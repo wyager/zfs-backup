@@ -7,8 +7,8 @@ import qualified Data.Map.Strict       as Map
 import           Lib.Common            (Remotable, SSHSpec, remotable, thing, Src, Dst)
 import           Lib.Command.List      (list)
 import           Lib.Progress          (printProgress)
-import           Lib.ZFS               (FilesystemName, SnapSet,
-                                        SnapshotName (..), byDate, presentIn,
+import           Lib.ZFS               (FilesystemName, ObjSet,
+                                        SnapshotName (..), SnapshotIdentifier(..), byDate, presentIn,
                                         single, snapshots, withFS)
 import           System.IO             (Handle, hClose)
 import qualified System.Process.Typed  as P
@@ -17,9 +17,9 @@ copy ::  Remotable (FilesystemName Src) ->  Remotable (FilesystemName Dst) -> Bo
 copy src dst sendCompressed sendRaw dryRun excluding recursive = do
     let srcRemote = remotable Nothing Just src
         dstRemote = remotable Nothing Just dst
-    srcSnaps <- either Ex.throw (return . snapshots) =<< list srcRemote excluding
-    dstSnaps <- either Ex.throw (return . snapshots) =<< list dstRemote excluding
-    case copyPlan (thing src) srcSnaps (thing dst) dstSnaps of
+    srcSnaps <- either Ex.throw (return . snapshots) =<< list (Just $ thing src) srcRemote excluding
+    dstSnaps <- either Ex.throw (return . snapshots) =<< list (Just $ thing dst) dstRemote excluding
+    case copyPlan (thing src) (withFS (thing src) srcSnaps) (thing dst) (withFS (thing dst) dstSnaps) of
         Left err -> print err
         Right plan -> if dryRun
             then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) recursive plan) 
@@ -61,7 +61,7 @@ executeCopyPlan sndSpec rcvSpec sndOpts plan recursive = case plan of
         let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
         printProgress ("Copying to " ++ show dstFs) $ \progress -> oneStep progress sndProc rcvProc
 
-sendArgs :: SendOptions -> Maybe (SnapshotName Src) -> SnapshotName Src -> Bool -> [String]
+sendArgs :: SendOptions -> Maybe (SnapshotIdentifier Src) -> SnapshotName Src -> Bool -> [String]
 sendArgs opts start stop recursive = ["send"] ++ sendOptArgs opts ++ (if recursive then ["-R"] else []) ++ case start of
         Just startFs -> ["-I", show startFs, show stop]
         Nothing -> [show stop]
@@ -74,9 +74,9 @@ recvArgs dstFS = ["receive", "-u", show dstFS]
 data CopyPlan
     = CopyNada
     | FullCopy (SnapshotName Src) (FilesystemName Dst)
-    | Incremental (SnapshotName Src) (SnapshotName Src) (FilesystemName Dst)
+    | Incremental (SnapshotIdentifier Src) (SnapshotName Src) (FilesystemName Dst)
 
-sendCommand :: Maybe SSHSpec -> SendOptions -> Maybe (SnapshotName Src) -> SnapshotName Src -> Bool -> (String, [String])
+sendCommand :: Maybe SSHSpec -> SendOptions -> Maybe (SnapshotIdentifier Src) -> SnapshotName Src -> Bool -> (String, [String])
 sendCommand ssh opts start stop recursive = case ssh of
     Nothing   -> ("zfs", sendArgs opts start stop recursive)
     Just spec -> ("ssh", [show spec, "zfs"] ++ sendArgs opts start stop recursive)
@@ -119,14 +119,14 @@ instance Show CopyPlan where
     show = prettyPlan
 
 
-copyPlan :: FilesystemName Src -> SnapSet Src -> FilesystemName Dst -> SnapSet Dst -> Either String CopyPlan
+copyPlan :: FilesystemName Src -> ObjSet SnapshotIdentifier Src -> FilesystemName Dst -> ObjSet SnapshotIdentifier Dst -> Either String CopyPlan
 copyPlan srcFS src dstFS dst =
     case Map.lookupMax dstByDate of
             Nothing -> case Map.lookupMax srcByDate  of
                 Nothing -> Right CopyNada -- No backups to copy over!
                 Just (_date, srcSnaps) -> do
                     (_guid,name) <- single srcSnaps
-                    Right (FullCopy name dstFS)
+                    Right (FullCopy (SnapshotName srcFS name) dstFS)
             Just (_latestDstDate, dstSnaps) ->  do
                 (latestDstGUID, _latestDstName) <- single dstSnaps
                 (_latestSrcGUID, latestSrcName) <- case Map.lookupMax srcByDate  of
@@ -140,13 +140,11 @@ copyPlan srcFS src dstFS dst =
                         help = "Solution: on dest, run: zfs rollback -r " ++ show latestBothName
                         notice = " . This will destroy the most recent snaps on destination."
                     Left (issue ++ help ++ notice)
-                Right $ Incremental latestBothName latestSrcName dstFS
+                Right $ Incremental latestBothName (SnapshotName srcFS latestSrcName) dstFS
     where
-    relevantOnSrc = withFS srcFS src
-    relevantOnDst = withFS dstFS dst 
-    onBoth = relevantOnSrc `presentIn` relevantOnDst
-    srcByDate = byDate relevantOnSrc
-    dstByDate = byDate relevantOnDst
+    onBoth = src `presentIn` dst
+    srcByDate = byDate src
+    dstByDate = byDate dst
     bothByDate = byDate onBoth
 
 speedTest :: IO ()

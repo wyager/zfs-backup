@@ -10,7 +10,7 @@ import           Options.Generic (ParseRecord, Wrapped,
                                   type (:::), type (<?>))
 import           Lib.Common      (Remotable, SSHSpec, Src, Dst)
 import           Lib.Units       (History)
-import           Lib.ZFS         (FilesystemName, SnapshotName(..))
+import           Lib.ZFS         (FilesystemName, SnapshotName(..), identifierOf)
 import           Lib.Regex       (Regex, matches)
 
 -- Don't worry about the w, (:::), <?> stuff. That's just
@@ -52,6 +52,6 @@ runCommand = do
         CleanupSnapshots{..} -> cleanup filesystem mostRecent alsoKeep dryRun (excluding ignoring) recursive
 
 excluding :: [Regex] -> SnapshotName sys -> Bool
-excluding regexes = \(SnapshotName _fs snap) -> any (snap `matches`) regexes
+excluding regexes = \(SnapshotName _fs snap) -> any (identifierOf snap `matches`) regexes
 
 
