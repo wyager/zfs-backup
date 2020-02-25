@@ -129,7 +129,7 @@ copyPlan srcFS src dstFS dst =
                     Right (FullCopy (SnapshotName srcFS name) dstFS)
             Just (_latestDstDate, dstSnaps) ->  do
                 (latestDstGUID, _latestDstName) <- single dstSnaps
-                (_latestSrcGUID, latestSrcName) <- case Map.lookupMax srcByDate  of
+                (latestSrcGUID, latestSrcName) <- case Map.lookupMax srcByDate  of
                     Nothing -> Left "Error: Snaphots exist on dest, but not source"
                     Just (_date, srcSnaps) -> single srcSnaps
                 (latestBothGUID, latestBothName) <- case Map.lookupMax bothByDate of
@@ -140,7 +140,9 @@ copyPlan srcFS src dstFS dst =
                         help = "Solution: on dest, run: zfs rollback -r " ++ show latestBothName
                         notice = " . This will destroy the most recent snaps on destination."
                     Left (issue ++ help ++ notice)
-                Right $ Incremental latestBothName (SnapshotName srcFS latestSrcName) dstFS
+                if latestDstGUID == latestSrcGUID
+                    then Right CopyNada
+                    else Right $ Incremental latestBothName (SnapshotName srcFS latestSrcName) dstFS
     where
     onBoth = src `presentIn` dst
     srcByDate = byDate src

@@ -29,11 +29,13 @@ cleanup filesystem mostRecent alsoKeep dryRun excluding recursive = do
     unless dryRun $ executeDeletePlan remote plan recursive
 
 executeDeletePlan :: Maybe SSHSpec -> DeletePlan sys -> Bool -> IO ()
-executeDeletePlan delSpec delPlan recursive = do
-    let (delExe, delArgs) = deleteCommand delSpec delPlan recursive
-    let delProc = P.setStdin P.closed $ P.proc delExe delArgs
-    print delProc
-    P.withProcessWait_ delProc $ \_del -> return ()
+executeDeletePlan delSpec delPlan recursive = 
+    case deleteCommand delSpec delPlan recursive of
+        Nothing -> return ()
+        Just (delExe, delArgs) -> do
+            let delProc = P.setStdin P.closed $ P.proc delExe delArgs
+            print delProc
+            P.withProcessWait_ delProc $ \_del -> return ()
 
 data DeletePlan sys = DeletePlan {deleteFS :: FilesystemName sys, toDelete :: Set (SnapshotIdentifier sys), toKeep :: Set (SnapshotIdentifier sys)} deriving Show
 
@@ -79,9 +81,11 @@ keepHistory _   snaps (Sample count (Period frac timeUnit)) = Set.fromList $ tak
 format :: FilesystemName sys -> Set (SnapshotIdentifier sys) -> String
 format fs snaps = show fs ++ "@" ++ intercalate "," (map show $ Set.toList snaps)
 
-deleteCommand :: Maybe SSHSpec -> DeletePlan sys -> Bool -> (String, [String])
-deleteCommand ssh (DeletePlan fs del _keep) recursive = case ssh of
-    Nothing   -> ("zfs", ["destroy"] ++ recFlag ++  [format fs del])
-    Just spec -> ("ssh", [show spec, "zfs"] ++ ["destroy"] ++ recFlag ++ [format fs del])
+deleteCommand :: Maybe SSHSpec -> DeletePlan sys -> Bool -> Maybe (String, [String])
+deleteCommand ssh (DeletePlan fs del _keep) recursive 
+    | null del = Nothing
+    | otherwise = Just $ case ssh of
+        Nothing   -> ("zfs", ["destroy"] ++ recFlag ++  [format fs del])
+        Just spec -> ("ssh", [show spec, "zfs"] ++ ["destroy"] ++ recFlag ++ [format fs del])
     where
     recFlag = if recursive then ["-r"] else []
