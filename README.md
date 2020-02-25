@@ -71,7 +71,7 @@ The tool is pretty fast during transfers (not that it has to do much work) - it 
 
 ## Help Text
 
-```bash
+```
 $ zfs-backup --help
 ZFS Backup Tool
 
@@ -84,27 +84,17 @@ Available commands:
   list                     
   copy-snapshots           
   cleanup-snapshots        
-
-$ zfs-backup list --help
-Usage: zfs-backup list [--remote SSHSPEC] [--ignoring REGEX]...
-
-Available options:
-  -h,--help                Show this help text
-  --remote SSHSPEC         Remote host to list on
-  --ignoring REGEX...      Ignore snapshots with names matching any of these
-                           regexes
-
 $ zfs-backup copy-snapshots --help
-Usage: zfs-backup copy-snapshots --src REMOTABLE FILESYSTEMNAME
-                                 --dst REMOTABLE FILESYSTEMNAME
+Usage: zfs-backup copy-snapshots --src REMOTABLE (FILESYSTEMNAME SRC)
+                                 --dst REMOTABLE (FILESYSTEMNAME DST)
                                  [--send-compressed] [--send-raw] [--dry-run]
-                                 [--ignoring REGEX]...
+                                 [--ignoring REGEX]... [--recursive]
 
 Available options:
   -h,--help                Show this help text
-  --src REMOTABLE FILESYSTEMNAME
+  --src REMOTABLE (FILESYSTEMNAME SRC)
                            Can be "tank/set" or "user@host:tank/set"
-  --dst REMOTABLE FILESYSTEMNAME
+  --dst REMOTABLE (FILESYSTEMNAME DST)
                            Can be "tank/set" or "user@host:tank/set"
   --send-compressed        Send using LZ4 compression
   --send-raw               Send Raw (can be used to securely backup encrypted
@@ -113,15 +103,17 @@ Available options:
                            to happen
   --ignoring REGEX...      Ignore snapshots with names matching any of these
                            regexes
-
+  --recursive              Recursive mode. Corresponds to `zfs send -R`, `zfs
+                           snapshot -r`, `zfs destroy -r`
 $ zfs-backup cleanup-snapshots --help
-Usage: zfs-backup cleanup-snapshots --filesystem REMOTABLE FILESYSTEMNAME
+Usage: zfs-backup cleanup-snapshots --filesystem REMOTABLE (FILESYSTEMNAME DST)
                                     [--most-recent INT] [--also-keep HISTORY]...
                                     [--dry-run] [--ignoring REGEX]...
+                                    [--recursive]
 
 Available options:
   -h,--help                Show this help text
-  --filesystem REMOTABLE FILESYSTEMNAME
+  --filesystem REMOTABLE (FILESYSTEMNAME DST)
                            Can be "tank/set" or "user@host:tank/set"
   --most-recent INT        Keep most recent N snapshots
   --also-keep HISTORY...   To keep 1 snapshot per month for the last 12 months,
@@ -136,4 +128,6 @@ Available options:
                            to happen
   --ignoring REGEX...      Ignore snapshots with names matching any of these
                            regexes
+  --recursive              Recursive mode. Corresponds to `zfs send -R`, `zfs
+                           snapshot -r`, `zfs destroy -r`
 ```
