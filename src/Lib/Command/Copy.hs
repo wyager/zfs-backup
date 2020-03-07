@@ -4,7 +4,8 @@ import           Control.Monad         (when)
 import qualified Data.ByteString.Char8 as BS
 import           Data.List             (intercalate)
 import qualified Data.Map.Strict       as Map
-import           Lib.Common            (Remotable, SSHSpec, remotable, thing, Src, Dst)
+import           Lib.Common            (Remotable, SSHSpec, remotable, thing, Src, Dst,
+                                        Should, should, SendCompressed, SendRaw, DryRun, OperateRecursively)
 import           Lib.Command.List      (list)
 import           Lib.Progress          (printProgress)
 import           Lib.ZFS               (FilesystemName, ObjSet,
@@ -13,7 +14,9 @@ import           Lib.ZFS               (FilesystemName, ObjSet,
 import           System.IO             (Handle, hClose)
 import qualified System.Process.Typed  as P
 
-copy ::  Remotable (FilesystemName Src) ->  Remotable (FilesystemName Dst) -> Bool -> Bool -> Bool -> (forall sys . SnapshotName sys -> Bool) -> Bool -> IO ()
+copy :: Remotable (FilesystemName Src) ->  Remotable (FilesystemName Dst) 
+     -> Should SendCompressed -> Should SendRaw -> Should DryRun 
+     -> (forall sys . SnapshotName sys -> Bool) -> Should OperateRecursively -> IO ()
 copy src dst sendCompressed sendRaw dryRun excluding recursive = do
     let srcRemote = remotable Nothing Just src
         dstRemote = remotable Nothing Just dst
@@ -21,7 +24,7 @@ copy src dst sendCompressed sendRaw dryRun excluding recursive = do
     dstSnaps <- either Ex.throw (return . snapshots) =<< list (Just $ thing dst) dstRemote excluding
     case copyPlan (thing src) (withFS (thing src) srcSnaps) (thing dst) (withFS (thing dst) dstSnaps) of
         Left err -> print err
-        Right plan -> if dryRun
+        Right plan -> if should @DryRun dryRun
             then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) recursive plan) 
             else executeCopyPlan srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan recursive
 
@@ -46,9 +49,7 @@ oneStep progress sndProc rcvProc = do
                         else progress (BS.length chunk) >> go
             go
 
-
-
-executeCopyPlan :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions -> CopyPlan -> Bool -> IO ()
+executeCopyPlan :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions -> CopyPlan -> Should OperateRecursively -> IO ()
 executeCopyPlan sndSpec rcvSpec sndOpts plan recursive = case plan of
     CopyNada -> putStrLn "Nothing to do"
     FullCopy snap dstFs -> goWith Nothing snap dstFs
@@ -61,55 +62,47 @@ executeCopyPlan sndSpec rcvSpec sndOpts plan recursive = case plan of
         let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
         printProgress ("Copying to " ++ show dstFs) $ \progress -> oneStep progress sndProc rcvProc
 
-sendArgs :: SendOptions -> Maybe (SnapshotIdentifier Src) -> SnapshotName Src -> Bool -> [String]
-sendArgs opts start stop recursive = ["send"] ++ sendOptArgs opts ++ (if recursive then ["-R"] else []) ++ case start of
+sendArgs :: SendOptions -> Maybe (SnapshotIdentifier Src) -> SnapshotName Src -> Should OperateRecursively -> [String]
+sendArgs opts start stop recursively = ["send"] ++ sendOptArgs opts ++ (if should @OperateRecursively recursively then ["-R"] else []) ++ case start of
         Just startFs -> ["-I", show startFs, show stop]
         Nothing -> [show stop]
 
 recvArgs :: FilesystemName Dst -> [String]
 recvArgs dstFS = ["receive", "-u", show dstFS]
 
-
-
 data CopyPlan
     = CopyNada
     | FullCopy (SnapshotName Src) (FilesystemName Dst)
     | Incremental (SnapshotIdentifier Src) (SnapshotName Src) (FilesystemName Dst)
 
-sendCommand :: Maybe SSHSpec -> SendOptions -> Maybe (SnapshotIdentifier Src) -> SnapshotName Src -> Bool -> (String, [String])
-sendCommand ssh opts start stop recursive = case ssh of
-    Nothing   -> ("zfs", sendArgs opts start stop recursive)
-    Just spec -> ("ssh", [show spec, "zfs"] ++ sendArgs opts start stop recursive)
+sendCommand :: Maybe SSHSpec -> SendOptions -> Maybe (SnapshotIdentifier Src) -> SnapshotName Src -> Should OperateRecursively -> (String, [String])
+sendCommand ssh opts start stop recursively = case ssh of
+    Nothing   -> ("zfs", sendArgs opts start stop recursively)
+    Just spec -> ("ssh", [show spec, "zfs"] ++ sendArgs opts start stop recursively)
 
 recCommand :: Maybe SSHSpec -> FilesystemName Dst -> (String, [String])
 recCommand ssh dstFs = case ssh of
     Nothing   -> ("zfs", recvArgs dstFs)
     Just spec -> ("ssh", [show spec, "zfs"] ++ recvArgs dstFs)
 
-data SendOptions = SendOptions
-    { sendCompressedOpt :: Bool
-    , sendRawOpt        :: Bool
-    }
-
+data SendOptions = SendOptions (Should SendCompressed) (Should SendRaw)
+    
 sendOptArgs :: SendOptions -> [String]
-sendOptArgs SendOptions{..} =
-    if sendCompressedOpt then ["--compressed"] else []
-    ++ if sendRawOpt then ["--raw"] else []
-
-
+sendOptArgs (SendOptions compressed raw)  =
+    if should @SendCompressed compressed then ["--compressed"] else []
+    ++ if should @SendRaw raw then ["--raw"] else []
 
 
 formatCommand :: (String, [String]) -> String
 formatCommand (cmd, args) = intercalate " " (cmd : args)
 
-showShell :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions ->  Bool -> CopyPlan -> String
-showShell _ _ _ _ CopyNada = "true"
-showShell send rcv opts recursive (FullCopy snap dstFs) = formatCommand (sendCommand send opts Nothing snap recursive) ++ " | pv | " ++ formatCommand (recCommand rcv dstFs)
-showShell send rcv opts recursive (Incremental start stop dstFs)
-    = formatCommand (sendCommand send opts (Just start) stop recursive) ++ " | pv | " ++
+showShell :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions ->  Should OperateRecursively -> CopyPlan -> String
+showShell _ _ _ _ CopyNada = "# nothing to do #"
+showShell send rcv opts recursively (FullCopy snap dstFs) = formatCommand (sendCommand send opts Nothing snap recursively) ++ " | pv | " ++ formatCommand (recCommand rcv dstFs)
+showShell send rcv opts recursively (Incremental start stop dstFs)
+    = formatCommand (sendCommand send opts (Just start) stop recursively) ++ " | pv | " ++
       formatCommand (recCommand rcv dstFs) ++ "\n"
         
-
 prettyPlan :: CopyPlan -> String
 prettyPlan CopyNada = "Do Nothing"
 prettyPlan (FullCopy name _dstFs) = "Full copy: " ++ show name

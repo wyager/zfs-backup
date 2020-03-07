@@ -1,5 +1,10 @@
 
-module Lib.Common(HasParser, parser, unWithParser, Host(..), SSHSpec(..), Remotable(..), thing, remotable, Src, Dst) where
+module Lib.Common(
+    HasParser, parser, unWithParser, 
+    Host(..), SSHSpec(..), Remotable(..), 
+    thing, remotable, Src, Dst, Should, 
+    should, SendCompressed, SendRaw, 
+    DryRun, OperateRecursively) where
 
 import           Control.Applicative  ((<|>))
 import qualified Data.Attoparsec.Text as A
@@ -12,10 +17,22 @@ import qualified Net.IPv4             as IP4
 import qualified Net.IPv6             as IP6
 import qualified Options.Applicative  as Opt
 import           Options.Generic      (Only (fromOnly), ParseField, ParseFields,
-                                       ParseRecord, parseRecord, readField)
+                                       ParseRecord, parseRecord, readField, parseFields)
 
 data Dst
 data Src
+
+newtype Should a = Should {should :: Bool}
+instance ParseFields (Should a) where
+    parseFields m l n = Should <$> parseFields m l n
+instance ParseRecord (Should a) where
+    parseRecord = Should <$> parseRecord
+
+data SendCompressed
+data SendRaw
+data DryRun
+data OperateRecursively
+
 
 class HasParser a where
     parser :: A.Parser a

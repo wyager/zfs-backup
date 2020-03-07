@@ -7,7 +7,8 @@ import qualified Data.Map.Strict      as Map
 import           Data.Set             (Set)
 import qualified Data.Set             as Set
 import           Data.Time.Clock      (UTCTime, getCurrentTime, addUTCTime)
-import           Lib.Common           (Remotable, SSHSpec, remotable, thing)
+import           Lib.Common           (Remotable, SSHSpec, remotable, thing,
+                                       Should, should, DryRun, OperateRecursively)
 import           Lib.Command.List     (list)
 import           Lib.Units            (History (..), Period (..), binBy, approximateDiffTime)
 import           Lib.ZFS              (FilesystemName, ObjSet,
@@ -19,18 +20,18 @@ import           Data.List            (intercalate)
 
 data DeleteError = Couldn'tPlan String deriving (Show, Ex.Exception)
 
-cleanup :: Remotable (FilesystemName sys) -> Maybe Int -> [History] -> Bool -> (SnapshotName sys -> Bool) -> Bool -> IO ()
-cleanup filesystem mostRecent alsoKeep dryRun excluding recursive = do
+cleanup :: Remotable (FilesystemName sys) -> Maybe Int -> [History] -> Should DryRun -> (SnapshotName sys -> Bool) -> Should OperateRecursively -> IO ()
+cleanup filesystem mostRecent alsoKeep dryRun excluding recursively = do
     let remote = remotable Nothing Just filesystem
     snaps <- either Ex.throw (return . snapshots) =<< list (Just $ thing filesystem) remote excluding
     now <- getCurrentTime
     plan <- either (Ex.throw . Couldn'tPlan) return $ planDeletion now (thing filesystem) (withFS (thing filesystem) snaps) (maybe 0 id mostRecent) alsoKeep
-    putStrLn $ prettyDeletePlan plan recursive
-    unless dryRun $ executeDeletePlan remote plan recursive
+    putStrLn $ prettyDeletePlan plan recursively
+    unless (should @DryRun dryRun) $ executeDeletePlan remote plan recursively
 
-executeDeletePlan :: Maybe SSHSpec -> DeletePlan sys -> Bool -> IO ()
-executeDeletePlan delSpec delPlan recursive = 
-    case deleteCommand delSpec delPlan recursive of
+executeDeletePlan :: Maybe SSHSpec -> DeletePlan sys -> Should OperateRecursively -> IO ()
+executeDeletePlan delSpec delPlan recursively = 
+    case deleteCommand delSpec delPlan recursively of
         Nothing -> return ()
         Just (delExe, delArgs) -> do
             let delProc = P.setStdin P.closed $ P.proc delExe delArgs
@@ -39,12 +40,12 @@ executeDeletePlan delSpec delPlan recursive =
 
 data DeletePlan sys = DeletePlan {deleteFS :: FilesystemName sys, toDelete :: Set (SnapshotIdentifier sys), toKeep :: Set (SnapshotIdentifier sys)} deriving Show
 
-prettyDeletePlan :: DeletePlan sys -> Bool -> String
-prettyDeletePlan (DeletePlan fs delete keep) recursive = concat
+prettyDeletePlan :: DeletePlan sys -> Should OperateRecursively -> String
+prettyDeletePlan (DeletePlan fs delete keep) recursively = concat
     ([ printf "Deleting %i snaps\n" (length delete)
     , printf "Keeping %i snaps:\n" (length keep)
     , concatMap (printf "  %s\n" . show . SnapshotName fs) (Set.toList keep)
-    ] ++ if recursive then ["Operating in recursive mode (destroy -r)\n"] else [])
+    ] ++ if should recursively then ["Operating in recursive mode (destroy -r)\n"] else [])
 
 
 planDeletion :: forall sys . UTCTime -> FilesystemName sys -> ObjSet SnapshotIdentifier sys -> Int -> [History] -> Either String (DeletePlan sys)
@@ -81,11 +82,11 @@ keepHistory _   snaps (Sample count (Period frac timeUnit)) = Set.fromList $ tak
 format :: FilesystemName sys -> Set (SnapshotIdentifier sys) -> String
 format fs snaps = show fs ++ "@" ++ intercalate "," (map show $ Set.toList snaps)
 
-deleteCommand :: Maybe SSHSpec -> DeletePlan sys -> Bool -> Maybe (String, [String])
-deleteCommand ssh (DeletePlan fs del _keep) recursive 
+deleteCommand :: Maybe SSHSpec -> DeletePlan sys -> Should OperateRecursively -> Maybe (String, [String])
+deleteCommand ssh (DeletePlan fs del _keep) recursively
     | null del = Nothing
     | otherwise = Just $ case ssh of
         Nothing   -> ("zfs", ["destroy"] ++ recFlag ++  [format fs del])
         Just spec -> ("ssh", [show spec, "zfs"] ++ ["destroy"] ++ recFlag ++ [format fs del])
     where
-    recFlag = if recursive then ["-r"] else []
+    recFlag = if should @OperateRecursively recursively then ["-r"] else []
