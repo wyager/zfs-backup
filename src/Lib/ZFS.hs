@@ -1,9 +1,8 @@
-module Lib.ZFS (Size, PoolName, GUID, ObjectMeta(..), Object(..), FilesystemName(..), SnapshotIdentifier(..), SnapshotName(..), objects, listShellCmd, listSnapsShellCmd, ObjSet, snapshots, withFS, presentIn, byDate, single) where
+module Lib.ZFS (Size, GUID, ObjectMeta(..), Object(..), FilesystemName(..), SnapshotIdentifier(..), SnapshotName(..), objects, listShellCmd, listSnapsShellCmd, ObjSet, snapshots, withFS, presentIn, byDate, single) where
 import           Lib.Common            (HasParser, parser, unWithParser)
 
 import           Control.Applicative   (many, (<|>))
 import qualified Data.Attoparsec.Text  as A
-import           Data.ByteString       (ByteString)
 import           Data.Map.Strict       (Map)
 import qualified Data.Map.Strict       as Map
 import           Data.Set              (Set)
@@ -19,8 +18,6 @@ import           Options.Generic       (ParseField, ParseFields, ParseRecord,
 import           Data.Typeable         (Typeable)
 
 newtype Size = Size Word64 deriving newtype (Eq, Ord, Show, Num)
-
-newtype PoolName = PoolName ByteString deriving newtype (Eq, Ord, Show)
 
 newtype GUID = GUID Word64 deriving newtype (Eq, Ord, Show)
 
