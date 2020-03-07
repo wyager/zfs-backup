@@ -128,7 +128,7 @@ instance Show CopyPlan where
     show = prettyPlan
 
 
-data CopyError = MustRollback (SnapshotName Dst) | NoSharedSnaps | NoSourceSnaps | AmbiguityError String deriving (Ex.Exception)
+data CopyError = MustRollback (SnapshotName Dst) | NoSharedSnaps | NoSourceSnaps | AmbiguityError String | DateInconsistency (SnapshotName Src) (SnapshotName Dst) deriving (Ex.Exception)
 instance Show CopyError where
     show (MustRollback snap) = 
         let issue = "Error: Most recent snap(s) on destination don't exist on source. "
@@ -138,8 +138,14 @@ instance Show CopyError where
     show NoSharedSnaps = "There are no snaps that exist on both source and destination"
     show NoSourceSnaps = "Error: Snaphots exist on dest, but not source"
     show (AmbiguityError str) = str
+    show (DateInconsistency src dst) = 
+        "Error: There is a mismatch in date values. The source thinks " ++ show src 
+        ++ " is the latest shared snap, but the dest thinks " ++ show dst
+        ++ " is the latest shared snap"
 
-copyPlan :: FilesystemName Src -> ObjSet SnapshotIdentifier Src -> FilesystemName Dst -> ObjSet SnapshotIdentifier Dst -> Either CopyError CopyPlan
+
+
+copyPlan :: FilesystemName Src -> ObjSet (SnapshotIdentifier Src) -> FilesystemName Dst -> ObjSet (SnapshotIdentifier Dst) -> Either CopyError CopyPlan
 copyPlan srcFS src dstFS dst =
     case Map.lookupMax dstByDate of
             Nothing -> case Map.lookupMax srcByDate  of
@@ -148,22 +154,27 @@ copyPlan srcFS src dstFS dst =
                     (_guid,name) <- first AmbiguityError $ single srcSnaps
                     Right (FullCopy (SnapshotName srcFS name) dstFS)
             Just (_latestDstDate, dstSnaps) ->  do
-                (latestDstGUID, latestDstName) <- first AmbiguityError $ single dstSnaps
+                (latestDstGUID, _latestDstName) <- first AmbiguityError $ single dstSnaps
                 (latestSrcGUID, latestSrcName) <- case Map.lookupMax srcByDate  of
                     Nothing -> Left NoSourceSnaps
                     Just (_date, srcSnaps) -> first AmbiguityError $ single srcSnaps
-                (latestBothGUID, latestBothName) <- case Map.lookupMax bothByDate of
+                let latests = (,) <$> Map.lookupMax (byDate (src `presentIn` dst))
+                                  <*> Map.lookupMax (byDate (dst `presentIn` src))
+                (latestBothGUID, latestBothSrcName, latestBothDstName) <- case latests of
                     Nothing -> Left NoSharedSnaps
-                    Just (_date, bothSnaps) -> first AmbiguityError $ single bothSnaps
-                when (latestDstGUID /= latestBothGUID) $ Left $ MustRollback $ SnapshotName dstFS latestDstName
+                    Just ((_srcDate, bothSrcSnaps), (_dstDate, bothDstSnaps)) -> do
+                        (srcSharedGUID, srcSharedName) <- first AmbiguityError $ single bothSrcSnaps
+                        (dstSharedGUID, dstSharedName) <- first AmbiguityError $ single bothDstSnaps
+                        when (srcSharedGUID /= dstSharedGUID) $ Left $ 
+                            DateInconsistency (SnapshotName srcFS srcSharedName) (SnapshotName dstFS dstSharedName)
+                        return (srcSharedGUID, srcSharedName, dstSharedName)
+                when (latestDstGUID /= latestBothGUID) $ Left $ MustRollback $ SnapshotName dstFS latestBothDstName 
                 if latestDstGUID == latestSrcGUID
                     then Right CopyNada
-                    else Right $ Incremental latestBothName (SnapshotName srcFS latestSrcName) dstFS
+                    else Right $ Incremental latestBothSrcName (SnapshotName srcFS latestSrcName) dstFS
     where
-    onBoth = src `presentIn` dst
     srcByDate = byDate src
     dstByDate = byDate dst
-    bothByDate = byDate onBoth
 
 speedTest :: IO ()
 speedTest = printProgress "Speed test" $ \update -> do

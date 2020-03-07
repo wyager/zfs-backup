@@ -48,7 +48,7 @@ prettyDeletePlan (DeletePlan fs delete keep) recursively = concat
     ] ++ if should recursively then ["Operating in recursive mode (destroy -r)\n"] else [])
 
 
-planDeletion :: forall sys . UTCTime -> FilesystemName sys -> ObjSet SnapshotIdentifier sys -> Int -> [History] -> Either String (DeletePlan sys)
+planDeletion :: forall sys . UTCTime -> FilesystemName sys -> ObjSet (SnapshotIdentifier sys) -> Int -> [History] -> Either String (DeletePlan sys)
 planDeletion now fsName snapSet mostRecentN histories = do
     inOrder :: Map UTCTime (SnapshotIdentifier sys) <- mapM (second snd . single) $ byDate snapSet
     let mostRecent = Set.fromList $ map snd $ take mostRecentN $ Map.toDescList inOrder

@@ -2,7 +2,7 @@ module Lib.ZFS (
     Size, GUID, ObjectMeta(..), Object(..), 
     FilesystemName(..), SnapshotIdentifier(..), SnapshotName(..), 
     objects, listShellCmd, listSnapsShellCmd, rehome,
-    ObjSet, snapshots, withFS, presentIn, byDate, single, seconds) where
+    ObjSet, snapshots, withFS, presentIn, byDate, single, seconds, byGUID) where
 import           Lib.Common            (HasParser, parser, unWithParser)
 
 import           Control.Applicative   (many, (<|>))
@@ -103,18 +103,15 @@ listSnapsShellCmd :: FilesystemName sys -> String
 listSnapsShellCmd  fs = "zfs list -Hp -t snapshot -o type,name,creation,guid,referenced,used " ++ show fs
 
 
-newtype ObjSet name sys = ObjSet {getSnapSet :: Map GUID (Map (name sys) ObjectMeta)} deriving (Show)
+newtype ObjSet name = ObjSet {getSnapSet :: Map GUID (Map name ObjectMeta)} deriving (Show)
 
+byGUID :: GUID -> ObjSet name -> Maybe (Map name ObjectMeta)
+byGUID guid (ObjSet objs) = Map.lookup guid objs 
 
--- newtype SnapSet sys = SnapSet {getSnapSet :: Map GUID (Map (SnapshotName sys) ObjectMeta)} deriving (Show)
-
-snapshots :: [Object sys] -> ObjSet SnapshotName sys
+snapshots :: [Object sys] -> ObjSet (SnapshotName sys)
 snapshots objs = ObjSet $ Map.fromListWith Map.union [(guidOf meta, Map.singleton name meta) | Snapshot name meta <- objs]
 
-
-
-
-withFS :: forall sys . FilesystemName sys -> ObjSet SnapshotName sys -> ObjSet SnapshotIdentifier sys
+withFS :: forall sys . FilesystemName sys -> ObjSet (SnapshotName sys) -> ObjSet (SnapshotIdentifier sys)
 withFS fsName (ObjSet objs) =
     ObjSet $ Map.filter (not . null) $ Map.map pullOutRelevant objs
     where
@@ -122,20 +119,19 @@ withFS fsName (ObjSet objs) =
     pullOutRelevant snaps = Map.fromList [(ident,v) | (SnapshotName fs ident, v) <- Map.toList snaps, fs == fsName]
 
 
-presentIn :: ObjSet k sys -> ObjSet k sys2 -> ObjSet k sys
+presentIn :: ObjSet (k sys) -> ObjSet (k sys2) -> ObjSet (k sys)
 (ObjSet a) `presentIn` (ObjSet b) = ObjSet (Map.intersection a b)
 
-
-triplets :: ObjSet name sys -> [(GUID, name sys, UTCTime)]
+triplets :: ObjSet (name sys) -> [(GUID, name sys, UTCTime)]
 triplets (ObjSet snaps) = [(guid,name,creationOf meta) | (guid,snaps') <- Map.toList snaps, (name,meta) <- Map.toList snaps']
 
-byDate :: Ord (name sys) => ObjSet name sys -> Map UTCTime (Set (GUID, name sys))
+byDate :: Ord (name sys) => ObjSet (name sys) -> Map UTCTime (Set (GUID, name sys))
 byDate = Map.fromListWith Set.union . map (\(guid,name,time) -> (time,Set.singleton (guid,name))) . triplets
 
 
 single :: Show v => Set (GUID, v) -> Either String (GUID, v)
 single snaps = case Set.minView snaps of
-    Nothing -> Left "Error: Zero available matching snaps. Bug?"
+    Nothing -> Left "Error: Zero available matching snaps"
     Just (lowest,others) | null others -> Right lowest
                       | otherwise -> Left $ "Error: Ambiguity between snaps: " ++ show lowest ++ " " ++ show others
 
