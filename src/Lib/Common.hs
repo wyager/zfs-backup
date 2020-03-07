@@ -4,7 +4,7 @@ module Lib.Common(
     Host(..), SSHSpec(..), Remotable(..), 
     thing, remotable, Src, Dst, Should, 
     should, SendCompressed, SendRaw, 
-    DryRun, OperateRecursively) where
+    DryRun, OperateRecursively, ForceFullSend) where
 
 import           Control.Applicative  ((<|>))
 import qualified Data.Attoparsec.Text as A
@@ -32,6 +32,7 @@ data SendCompressed
 data SendRaw
 data DryRun
 data OperateRecursively
+data ForceFullSend
 
 
 class HasParser a where

@@ -5,7 +5,8 @@ import qualified Data.ByteString.Char8 as BS
 import           Data.List             (intercalate)
 import qualified Data.Map.Strict       as Map
 import           Lib.Common            (Remotable, SSHSpec, remotable, thing, Src, Dst,
-                                        Should, should, SendCompressed, SendRaw, DryRun, OperateRecursively)
+                                        Should, should, SendCompressed, SendRaw, 
+                                        DryRun, OperateRecursively, ForceFullSend)
 import           Lib.Command.List      (list)
 import           Lib.Progress          (printProgress)
 import           Lib.ZFS               (FilesystemName, ObjSet,
@@ -16,17 +17,22 @@ import qualified System.Process.Typed  as P
 
 copy :: Remotable (FilesystemName Src) ->  Remotable (FilesystemName Dst) 
      -> Should SendCompressed -> Should SendRaw -> Should DryRun 
-     -> (forall sys . SnapshotName sys -> Bool) -> Should OperateRecursively -> IO ()
-copy src dst sendCompressed sendRaw dryRun excluding recursive = do
+     -> (forall sys . SnapshotName sys -> Bool) -> Should OperateRecursively
+     -> Should ForceFullSend -> IO ()
+copy src dst sendCompressed sendRaw dryRun excluding recursive sendFull = do
     let srcRemote = remotable Nothing Just src
         dstRemote = remotable Nothing Just dst
     srcSnaps <- either Ex.throw (return . snapshots) =<< list (Just $ thing src) srcRemote excluding
     dstSnaps <- either Ex.throw (return . snapshots) =<< list (Just $ thing dst) dstRemote excluding
     case copyPlan (thing src) (withFS (thing src) srcSnaps) (thing dst) (withFS (thing dst) dstSnaps) of
         Left err -> print err
-        Right plan -> if should @DryRun dryRun
-            then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) recursive plan) 
-            else executeCopyPlan srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan recursive
+        Right originalPlan -> do 
+            plan <- if should @ForceFullSend sendFull 
+                        then fullify originalPlan <$ putStrLn "Unconditionally sending full snapshot" 
+                        else return originalPlan
+            if should @DryRun dryRun
+                then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) recursive plan) 
+                else executeCopyPlan srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan recursive
 
 -- About 3 GB/sec on my mbp
 oneStep ::  (Int -> IO ()) -> P.ProcessConfig () Handle () ->  P.ProcessConfig Handle () () -> IO ()
@@ -74,6 +80,10 @@ data CopyPlan
     = CopyNada
     | FullCopy (SnapshotName Src) (FilesystemName Dst)
     | Incremental (SnapshotIdentifier Src) (SnapshotName Src) (FilesystemName Dst)
+
+fullify :: CopyPlan -> CopyPlan
+fullify (Incremental _startSnap stopSnap dstFs) = FullCopy stopSnap dstFs
+fullify plan = plan
 
 sendCommand :: Maybe SSHSpec -> SendOptions -> Maybe (SnapshotIdentifier Src) -> SnapshotName Src -> Should OperateRecursively -> (String, [String])
 sendCommand ssh opts start stop recursively = case ssh of

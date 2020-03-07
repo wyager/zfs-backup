@@ -9,7 +9,7 @@ import           Options.Generic (ParseRecord, Wrapped,
                                   parseRecord, parseRecordWithModifiers,
                                   type (:::), type (<?>))
 import           Lib.Common      (Remotable, SSHSpec, Src, Dst, 
-                                  Should, SendCompressed, SendRaw, DryRun, OperateRecursively)
+                                  Should, SendCompressed, SendRaw, DryRun, OperateRecursively, ForceFullSend)
 import           Lib.Units       (History)
 import           Lib.ZFS         (FilesystemName, SnapshotName(..), identifierOf)
 import           Lib.Regex       (Regex, matches)
@@ -28,7 +28,8 @@ data Command w
         sendRaw :: w ::: Should SendRaw <?> "Send Raw (can be used to securely backup encrypted datasets)",
         dryRun :: w ::: Should DryRun <?> "Don't actually do anything, just print what's going to happen",
         ignoring :: w ::: [Regex] <?> "Ignore snapshots with names matching any of these regexes",
-        recursive :: w ::: Should OperateRecursively <?> "Recursive mode. Corresponds to `zfs send -R`, `zfs snapshot -r`, `zfs destroy -r`"
+        recursive :: w ::: Should OperateRecursively <?> "Recursive mode. Corresponds to `zfs send -R`, `zfs snapshot -r`, `zfs destroy -r`",
+        forceFullSend :: w ::: Should ForceFullSend <?> "Send a full snapshot, even if an incremental snapshot could be sent"
     }
     | CleanupSnapshots {
         filesystem :: w ::: Remotable (FilesystemName Dst) <?> "Can be \"tank/set\" or \"user@host:tank/set\"",
@@ -49,7 +50,7 @@ runCommand = do
     command <- unwrapRecord "ZFS Backup Tool"
     case command of
         List host ignoring   -> listPrint host (excluding ignoring)
-        CopySnapshots{..}    -> copy src dst sendCompressed sendRaw dryRun (excluding ignoring) recursive
+        CopySnapshots{..}    -> copy src dst sendCompressed sendRaw dryRun (excluding ignoring) recursive forceFullSend
         CleanupSnapshots{..} -> cleanup filesystem mostRecent alsoKeep dryRun (excluding ignoring) recursive
 
 excluding :: [Regex] -> SnapshotName sys -> Bool

@@ -1,4 +1,8 @@
-module Lib.ZFS (Size, GUID, ObjectMeta(..), Object(..), FilesystemName(..), SnapshotIdentifier(..), SnapshotName(..), objects, listShellCmd, listSnapsShellCmd, ObjSet, snapshots, withFS, presentIn, byDate, single) where
+module Lib.ZFS (
+    Size, GUID, ObjectMeta(..), Object(..), 
+    FilesystemName(..), SnapshotIdentifier(..), SnapshotName(..), 
+    objects, listShellCmd, listSnapsShellCmd, 
+    ObjSet, snapshots, withFS, presentIn, byDate, single, seconds) where
 import           Lib.Common            (HasParser, parser, unWithParser)
 
 import           Control.Applicative   (many, (<|>))
@@ -18,8 +22,12 @@ import           Options.Generic       (ParseField, ParseFields, ParseRecord,
 import           Data.Typeable         (Typeable)
 
 newtype Size = Size Word64 deriving newtype (Eq, Ord, Show, Num)
+instance HasParser Size where
+    parser = Size <$> A.decimal
 
 newtype GUID = GUID Word64 deriving newtype (Eq, Ord, Show)
+instance HasParser GUID where
+    parser = GUID <$> A.decimal
 
 data ObjectMeta = ObjectMeta
     { creationOf   :: !UTCTime
@@ -75,11 +83,9 @@ instance HasParser (Object sys) where
         fs = "filesystem" *> (Filesystem <$> t parser <*> t meta)
         vol = "volume" *> (Volume <$ A.takeTill A.isEndOfLine)
         snap = "snapshot" *> (Snapshot <$> t parser <*> t meta)
-        meta = ObjectMeta <$> creation <*> t guid <*> t size <*> t size
+        meta = ObjectMeta <$> creation <*> t parser <*> t parser <*> t parser
         t x = A.char '\t' *> x
         creation = seconds <$> A.decimal
-        guid = GUID <$> A.decimal
-        size = Size <$> A.decimal
 
 objects :: A.Parser [Object sys]
 objects = many parser <* A.endOfInput
