@@ -14,6 +14,11 @@ import           Lib.ZFS               (FilesystemName, ObjSet,
                                         single, snapshots, withFS)
 import           System.IO             (Handle, hClose)
 import qualified System.Process.Typed  as P
+import           Data.Bifunctor        (first)
+
+
+
+
 
 copy :: Remotable (FilesystemName Src) ->  Remotable (FilesystemName Dst) 
      -> Should SendCompressed -> Should SendRaw -> Should DryRun 
@@ -24,18 +29,16 @@ copy src dst sendCompressed sendRaw dryRun excluding recursive sendFull = do
         dstRemote = remotable Nothing Just dst
     srcSnaps <- either Ex.throw (return . snapshots) =<< list (Just $ thing src) srcRemote excluding
     dstSnaps <- either Ex.throw (return . snapshots) =<< list (Just $ thing dst) dstRemote excluding
-    case copyPlan (thing src) (withFS (thing src) srcSnaps) (thing dst) (withFS (thing dst) dstSnaps) of
-        Left err -> fail err
-        Right originalPlan -> do 
-            plan <- if should @ForceFullSend sendFull 
-                        then fullify originalPlan <$ 
-                             putStrLn "Unconditionally sending full snapshot. \
-                                      \This will probably fail, because you'll need remove destination snapshots, \
-                                      \but that's dangerous so I'm not doing it for you." 
-                        else return originalPlan
-            if should @DryRun dryRun
-                then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) recursive plan) 
-                else executeCopyPlan srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan recursive
+    originalPlan <- either Ex.throw return $ copyPlan (thing src) (withFS (thing src) srcSnaps) (thing dst) (withFS (thing dst) dstSnaps)
+    plan <- if should @ForceFullSend sendFull 
+                then fullify originalPlan <$ 
+                     putStrLn "Unconditionally sending full snapshot. \
+                              \This will probably fail, because you'll need remove destination snapshots, \
+                              \but that's dangerous so I'm not doing it for you." 
+                else return originalPlan
+    if should @DryRun dryRun
+        then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) recursive plan) 
+        else executeCopyPlan srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan recursive
 
 -- About 3 GB/sec on my mbp
 oneStep ::  (Int -> IO ()) -> P.ProcessConfig () Handle () ->  P.ProcessConfig Handle () () -> IO ()
@@ -125,27 +128,34 @@ instance Show CopyPlan where
     show = prettyPlan
 
 
-copyPlan :: FilesystemName Src -> ObjSet SnapshotIdentifier Src -> FilesystemName Dst -> ObjSet SnapshotIdentifier Dst -> Either String CopyPlan
+data CopyError = MustRollback (SnapshotName Dst) | NoSharedSnaps | NoSourceSnaps | AmbiguityError String deriving (Ex.Exception)
+instance Show CopyError where
+    show (MustRollback snap) = 
+        let issue = "Error: Most recent snap(s) on destination don't exist on source. "
+            help = "Solution: on dest, run: zfs rollback -r " ++ show snap
+            notice = " on destination. This will destroy more recent snaps on destination."
+        in issue ++ help ++ notice
+    show NoSharedSnaps = "There are no snaps that exist on both source and destination"
+    show NoSourceSnaps = "Error: Snaphots exist on dest, but not source"
+    show (AmbiguityError str) = str
+
+copyPlan :: FilesystemName Src -> ObjSet SnapshotIdentifier Src -> FilesystemName Dst -> ObjSet SnapshotIdentifier Dst -> Either CopyError CopyPlan
 copyPlan srcFS src dstFS dst =
     case Map.lookupMax dstByDate of
             Nothing -> case Map.lookupMax srcByDate  of
                 Nothing -> Right CopyNada -- No backups to copy over!
                 Just (_date, srcSnaps) -> do
-                    (_guid,name) <- single srcSnaps
+                    (_guid,name) <- first AmbiguityError $ single srcSnaps
                     Right (FullCopy (SnapshotName srcFS name) dstFS)
             Just (_latestDstDate, dstSnaps) ->  do
-                (latestDstGUID, latestDstName) <- single dstSnaps
+                (latestDstGUID, latestDstName) <- first AmbiguityError $ single dstSnaps
                 (latestSrcGUID, latestSrcName) <- case Map.lookupMax srcByDate  of
-                    Nothing -> Left "Error: Snaphots exist on dest, but not source"
-                    Just (_date, srcSnaps) -> single srcSnaps
+                    Nothing -> Left NoSourceSnaps
+                    Just (_date, srcSnaps) -> first AmbiguityError $ single srcSnaps
                 (latestBothGUID, latestBothName) <- case Map.lookupMax bothByDate of
-                    Nothing -> Left "There are no snaps that exist on both source and destination"
-                    Just (_date, bothSnaps) -> single bothSnaps
-                when (latestDstGUID /= latestBothGUID) $ do
-                    let issue = "Error: Most recent snap(s) on destination don't exist on source. "
-                        help = "Solution: on dest, run: zfs rollback -r " ++ show (SnapshotName dstFS latestDstName)
-                        notice = " on destination. This will destroy more recent snaps on destination."
-                    Left (issue ++ help ++ notice)
+                    Nothing -> Left NoSharedSnaps
+                    Just (_date, bothSnaps) -> first AmbiguityError $ single bothSnaps
+                when (latestDstGUID /= latestBothGUID) $ Left $ MustRollback $ SnapshotName dstFS latestDstName
                 if latestDstGUID == latestSrcGUID
                     then Right CopyNada
                     else Right $ Incremental latestBothName (SnapshotName srcFS latestSrcName) dstFS
