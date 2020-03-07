@@ -128,7 +128,7 @@ copyPlan srcFS src dstFS dst =
                     (_guid,name) <- single srcSnaps
                     Right (FullCopy (SnapshotName srcFS name) dstFS)
             Just (_latestDstDate, dstSnaps) ->  do
-                (latestDstGUID, _latestDstName) <- single dstSnaps
+                (latestDstGUID, latestDstName) <- single dstSnaps
                 (latestSrcGUID, latestSrcName) <- case Map.lookupMax srcByDate  of
                     Nothing -> Left "Error: Snaphots exist on dest, but not source"
                     Just (_date, srcSnaps) -> single srcSnaps
@@ -137,8 +137,8 @@ copyPlan srcFS src dstFS dst =
                     Just (_date, bothSnaps) -> single bothSnaps
                 when (latestDstGUID /= latestBothGUID) $ do
                     let issue = "Error: Most recent snap(s) on destination don't exist on source. "
-                        help = "Solution: on dest, run: zfs rollback -r " ++ show latestBothName
-                        notice = " . This will destroy the most recent snaps on destination."
+                        help = "Solution: on dest, run: zfs rollback -r " ++ show (SnapshotName dstFS latestDstName)
+                        notice = " on destination. This will destroy more recent snaps on destination."
                     Left (issue ++ help ++ notice)
                 if latestDstGUID == latestSrcGUID
                     then Right CopyNada
