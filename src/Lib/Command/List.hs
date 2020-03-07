@@ -37,8 +37,6 @@ listWith excluding cmd = do
             ExitFailure _i -> return $ Left $ CommandError err
     return $ output >>= second (filterWith excluding) . first ZFSListParseError . A.parseOnly objects
 
-
-
 localCmd :: Maybe (FilesystemName sys) -> P.ProcessConfig () () ()
 localCmd = maybe (P.shell listShellCmd) (P.shell . listSnapsShellCmd) 
 

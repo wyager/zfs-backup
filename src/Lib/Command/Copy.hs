@@ -30,7 +30,7 @@ copy src dst sendCompressed sendRaw dryRun excluding recursive sendFull = do
             plan <- if should @ForceFullSend sendFull 
                         then fullify originalPlan <$ 
                              putStrLn "Unconditionally sending full snapshot. \
-                                      \ This will probably fail, because you'll need to use '-F', \
+                                      \This will probably fail, because you'll need remove destination snapshots, \
                                       \but that's dangerous so I'm not doing it for you." 
                         else return originalPlan
             if should @DryRun dryRun
