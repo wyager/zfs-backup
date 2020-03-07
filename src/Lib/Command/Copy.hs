@@ -25,7 +25,7 @@ copy src dst sendCompressed sendRaw dryRun excluding recursive sendFull = do
     srcSnaps <- either Ex.throw (return . snapshots) =<< list (Just $ thing src) srcRemote excluding
     dstSnaps <- either Ex.throw (return . snapshots) =<< list (Just $ thing dst) dstRemote excluding
     case copyPlan (thing src) (withFS (thing src) srcSnaps) (thing dst) (withFS (thing dst) dstSnaps) of
-        Left err -> print err
+        Left err -> fail err
         Right originalPlan -> do 
             plan <- if should @ForceFullSend sendFull 
                         then fullify originalPlan <$ 
