@@ -28,7 +28,10 @@ copy src dst sendCompressed sendRaw dryRun excluding recursive sendFull = do
         Left err -> print err
         Right originalPlan -> do 
             plan <- if should @ForceFullSend sendFull 
-                        then fullify originalPlan <$ putStrLn "Unconditionally sending full snapshot" 
+                        then fullify originalPlan <$ 
+                             putStrLn "Unconditionally sending full snapshot. \
+                                      \ This will probably fail, because you'll need to use '-F', \
+                                      \but that's dangerous so I'm not doing it for you." 
                         else return originalPlan
             if should @DryRun dryRun
                 then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) recursive plan) 

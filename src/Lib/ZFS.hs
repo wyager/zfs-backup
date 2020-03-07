@@ -1,7 +1,7 @@
 module Lib.ZFS (
     Size, GUID, ObjectMeta(..), Object(..), 
     FilesystemName(..), SnapshotIdentifier(..), SnapshotName(..), 
-    objects, listShellCmd, listSnapsShellCmd, 
+    objects, listShellCmd, listSnapsShellCmd, rehome,
     ObjSet, snapshots, withFS, presentIn, byDate, single, seconds) where
 import           Lib.Common            (HasParser, parser, unWithParser)
 
@@ -62,6 +62,9 @@ deriving anyclass instance Typeable sys => ParseFields (FilesystemName sys)
 newtype SnapshotIdentifier sys = SnapshotIdentifier {identifierOf :: Text} deriving (Eq,Ord)
 instance Show (SnapshotIdentifier sys) where
     show (SnapshotIdentifier ident) = T.unpack ident
+
+rehome :: SnapshotIdentifier a -> SnapshotIdentifier b
+rehome = SnapshotIdentifier . identifierOf
 
 
 data SnapshotName sys = SnapshotName {snapshotFSOf :: FilesystemName sys, snapshotNameOf :: SnapshotIdentifier sys} deriving (Eq,Ord)
