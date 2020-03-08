@@ -1,4 +1,4 @@
-module Lib.Command.Copy (copy,speedTest) where
+module Lib.Command.Copy (copy,speedTest,BufferConfig(..),defaultBufferConfig) where
 import qualified Control.Exception     as Ex
 import           Control.Monad         (when)
 import qualified Data.ByteString.Char8 as BS
@@ -15,16 +15,18 @@ import           Lib.ZFS               (FilesystemName, ObjSet,
 import           System.IO             (Handle, hClose)
 import qualified System.Process.Typed  as P
 import           Data.Bifunctor        (first)
+import qualified Control.Concurrent.Async as Async
+import qualified Control.Concurrent.Chan.Unagi.Bounded as Chan
 
-
-
-
+data BufferConfig = BufferConfig {maxSegs :: Int} deriving Show
+defaultBufferConfig :: BufferConfig
+defaultBufferConfig = BufferConfig {maxSegs = 16} 
 
 copy :: Remotable (FilesystemName Src) ->  Remotable (FilesystemName Dst) 
      -> Should SendCompressed -> Should SendRaw -> Should DryRun 
      -> (forall sys . SnapshotName sys -> Bool) -> Should OperateRecursively
-     -> Should ForceFullSend -> IO ()
-copy src dst sendCompressed sendRaw dryRun excluding recursive sendFull = do
+     -> Should ForceFullSend -> BufferConfig -> IO ()
+copy src dst sendCompressed sendRaw dryRun excluding recursive sendFull bufferConfig = do
     let srcRemote = remotable Nothing Just src
         dstRemote = remotable Nothing Just dst
     srcSnaps <- either Ex.throw (return . snapshots) =<< list (Just $ thing src) srcRemote excluding
@@ -38,31 +40,38 @@ copy src dst sendCompressed sendRaw dryRun excluding recursive sendFull = do
                 else return originalPlan
     if should @DryRun dryRun
         then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) recursive plan) 
-        else executeCopyPlan srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan recursive
+        else executeCopyPlan srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan recursive bufferConfig
 
--- About 3 GB/sec on my mbp
-oneStep ::  (Int -> IO ()) -> P.ProcessConfig () Handle () ->  P.ProcessConfig Handle () () -> IO ()
-oneStep progress sndProc rcvProc = do
+oneStep :: BufferConfig -> (Int -> IO ()) -> P.ProcessConfig () Handle () ->  P.ProcessConfig Handle () () -> IO ()
+oneStep bufferCfg progress sndProc rcvProc = do
     print sndProc
     print rcvProc
     P.withProcessWait_ rcvProc $ \rcv ->
         P.withProcessWait_ sndProc $ \send -> do
-            let sndHdl = P.getStdout send
-            let rcvHdl = P.getStdin rcv
-            let go = do
-                    -- The actual fastest on my mbp seems to be hGet 0x10000,
-                    -- but that feels very machine-dependent. Hopefully hGetSome
-                    -- with a bit of room will reliably capture most of the max
-                    -- possible performance. With this, I get around 3GB/sec
-                    chunk <- BS.hGetSome sndHdl 0x20000
-                    BS.hPut rcvHdl chunk
-                    if BS.null chunk
-                        then hClose rcvHdl
-                        else progress (BS.length chunk) >> go
-            go
+            (writeChan, readChan) <- Chan.newChan (maxSegs bufferCfg)
+            writer <- Async.async $ do
+                let sndHdl = P.getStdout send
+                let go = do
+                        chunk <- BS.hGetSome sndHdl 0x20000
+                        Chan.writeChan writeChan chunk
+                        if BS.null chunk
+                            then return ()
+                            else go 
+                go
+            reader <- Async.async $ do
+                let rcvHdl = P.getStdin rcv
+                let go = do
+                        chunk <- Chan.readChan readChan
+                        BS.hPut rcvHdl chunk
+                        if BS.null chunk
+                            then hClose rcvHdl
+                            else progress (BS.length chunk) >> go
+                go
+            ((),()) <- Async.waitBoth reader writer
+            return ()
 
-executeCopyPlan :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions -> CopyPlan -> Should OperateRecursively -> IO ()
-executeCopyPlan sndSpec rcvSpec sndOpts plan recursive = case plan of
+executeCopyPlan :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions -> CopyPlan -> Should OperateRecursively -> BufferConfig -> IO ()
+executeCopyPlan sndSpec rcvSpec sndOpts plan recursive bufferConfig = case plan of
     CopyNada -> putStrLn "Nothing to do"
     FullCopy snap dstFs -> goWith Nothing snap dstFs
     Incremental start stop dstFs -> goWith (Just start) stop dstFs
@@ -72,7 +81,7 @@ executeCopyPlan sndSpec rcvSpec sndOpts plan recursive = case plan of
         let (rcvExe,rcvArgs) = recCommand rcvSpec dstFs
         let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ P.proc sndExe sndArgs
         let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
-        printProgress ("Copying to " ++ show dstFs) $ \progress -> oneStep progress sndProc rcvProc
+        printProgress ("Copying to " ++ show dstFs) $ \progress -> oneStep bufferConfig progress sndProc rcvProc
 
 sendArgs :: SendOptions -> Maybe (SnapshotIdentifier Src) -> SnapshotName Src -> Should OperateRecursively -> [String]
 sendArgs opts start stop recursively = ["send"] ++ sendOptArgs opts ++ (if should @OperateRecursively recursively then ["-R"] else []) ++ case start of
@@ -180,5 +189,5 @@ speedTest :: IO ()
 speedTest = printProgress "Speed test" $ \update -> do
     let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ "dd bs=1m if=/dev/zero count=10000"
     let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ "dd bs=1m of=/dev/null"
-    oneStep update sndProc rcvProc
+    oneStep defaultBufferConfig update sndProc rcvProc
 

@@ -63,6 +63,7 @@ dependencies:
 - regex-tdfa
 - regex-tdfa-text # deprecated, but latest LTS doesn't have new enough regex-tdfa
 - regex-base
+- unagi-chan
 
 library:
   source-dirs: src

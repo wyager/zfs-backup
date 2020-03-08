@@ -1,7 +1,7 @@
 module Lib (runCommand) where
 
 import           GHC.Generics    (Generic)
-import           Lib.Command.Copy        (copy)
+import           Lib.Command.Copy        (copy,BufferConfig(..),defaultBufferConfig)
 import           Lib.Command.Delete      (cleanup)
 import           Lib.Command.List        (listPrint)
 import           Options.Generic (ParseRecord, Wrapped, 
@@ -29,7 +29,8 @@ data Command w
         dryRun :: w ::: Should DryRun <?> "Don't actually do anything, just print what's going to happen",
         ignoring :: w ::: [Regex] <?> "Ignore snapshots with names matching any of these regexes",
         recursive :: w ::: Should OperateRecursively <?> "Recursive mode. Corresponds to `zfs send -R`, `zfs snapshot -r`, `zfs destroy -r`",
-        forceFullSend :: w ::: Should ForceFullSend <?> "Send a full snapshot, even if an incremental snapshot could be sent"
+        forceFullSend :: w ::: Should ForceFullSend <?> "Send a full snapshot, even if an incremental snapshot could be sent",
+        transferBufferCount :: w ::: Maybe Int <?> "How many reads/writes to buffer between `zfs send` and `zfs receive`. Useful for bursty sends. Default 16"
     }
     | CleanupSnapshots {
         filesystem :: w ::: Remotable (FilesystemName Dst) <?> "Can be \"tank/set\" or \"user@host:tank/set\"",
@@ -50,7 +51,7 @@ runCommand = do
     command <- unwrapRecord "ZFS Backup Tool"
     case command of
         List host ignoring   -> listPrint host (excluding ignoring)
-        CopySnapshots{..}    -> copy src dst sendCompressed sendRaw dryRun (excluding ignoring) recursive forceFullSend
+        CopySnapshots{..}    -> copy src dst sendCompressed sendRaw dryRun (excluding ignoring) recursive forceFullSend (maybe defaultBufferConfig BufferConfig transferBufferCount)
         CleanupSnapshots{..} -> cleanup filesystem mostRecent alsoKeep dryRun (excluding ignoring) recursive
 
 excluding :: [Regex] -> SnapshotName sys -> Bool
