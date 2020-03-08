@@ -42,7 +42,11 @@ copy src dst sendCompressed sendRaw dryRun excluding recursive sendFull bufferCo
         then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) recursive plan) 
         else executeCopyPlan srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan recursive bufferConfig
 
-oneStep :: BufferConfig -> (Int -> IO ()) -> P.ProcessConfig () Handle () ->  P.ProcessConfig Handle () () -> IO ()
+newtype Buffered = Buffered Int
+instance Show Buffered where
+    show (Buffered i) = "Bufferred writes: ~" ++ show i
+
+oneStep :: BufferConfig -> (Int -> Buffered -> IO ()) -> P.ProcessConfig () Handle () ->  P.ProcessConfig Handle () () -> IO ()
 oneStep bufferCfg progress sndProc rcvProc = do
     print sndProc
     print rcvProc
@@ -65,7 +69,10 @@ oneStep bufferCfg progress sndProc rcvProc = do
                         BS.hPut rcvHdl chunk
                         if BS.null chunk
                             then hClose rcvHdl
-                            else progress (BS.length chunk) >> go
+                            else do
+                                buffered <- Buffered <$> Chan.estimatedLength writeChan
+                                progress (BS.length chunk) buffered
+                                go
                 go
             ((),()) <- Async.waitBoth reader writer
             return ()
@@ -81,7 +88,7 @@ executeCopyPlan sndSpec rcvSpec sndOpts plan recursive bufferConfig = case plan 
         let (rcvExe,rcvArgs) = recCommand rcvSpec dstFs
         let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ P.proc sndExe sndArgs
         let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
-        printProgress ("Copying to " ++ show dstFs) $ \progress -> oneStep bufferConfig progress sndProc rcvProc
+        printProgress ("Copying to " ++ show dstFs) (Buffered 0) $ \progress -> oneStep bufferConfig progress sndProc rcvProc
 
 sendArgs :: SendOptions -> Maybe (SnapshotIdentifier Src) -> SnapshotName Src -> Should OperateRecursively -> [String]
 sendArgs opts start stop recursively = ["send"] ++ sendOptArgs opts ++ (if should @OperateRecursively recursively then ["-R"] else []) ++ case start of
@@ -186,7 +193,7 @@ copyPlan srcFS src dstFS dst =
     dstByDate = byDate dst
 
 speedTest :: IO ()
-speedTest = printProgress "Speed test" $ \update -> do
+speedTest = printProgress "Speed test" (Buffered 0) $ \update -> do
     let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ "dd bs=1m if=/dev/zero count=10000"
     let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ "dd bs=1m of=/dev/null"
     oneStep defaultBufferConfig update sndProc rcvProc
