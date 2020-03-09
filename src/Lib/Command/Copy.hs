@@ -11,7 +11,7 @@ import           Lib.Command.List      (list)
 import           Lib.Progress          (printProgress)
 import           Lib.ZFS               (FilesystemName, ObjSet,
                                         SnapshotName (..), SnapshotIdentifier(..), byDate, presentIn,
-                                        single, snapshots, withFS)
+                                        single, snapshots, withFS, rehome)
 import           System.IO             (Handle, hClose)
 import qualified System.Process.Typed  as P
 import           Data.Bifunctor        (first)
@@ -85,7 +85,9 @@ executeCopyPlan sndSpec rcvSpec sndOpts plan recursive bufferConfig = case plan 
     where
     goWith start stop dstFs = do
         let (sndExe,sndArgs) = sendCommand sndSpec sndOpts start stop recursive
-        let (rcvExe,rcvArgs) = recCommand rcvSpec dstFs
+        let (rcvExe,rcvArgs) = case start of
+                Nothing -> recCommand rcvSpec (stop `sameSnapshotOn` dstFs)
+                Just _startSnap -> recCommand rcvSpec dstFs -- No need to specify the receiving snapshot name, since we're doing an incremental send
         let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ P.proc sndExe sndArgs
         let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
         printProgress ("Copying to " ++ show dstFs) (Buffered 0) $ \progress -> oneStep bufferConfig progress sndProc rcvProc
@@ -95,13 +97,14 @@ sendArgs opts start stop recursively = ["send"] ++ sendOptArgs opts ++ (if shoul
         Just startFs -> ["-I", show startFs, show stop]
         Nothing -> [show stop]
 
-recvArgs :: FilesystemName Dst -> [String]
-recvArgs dstFS = ["receive", "-u", show dstFS]
 
 data CopyPlan
     = CopyNada
     | FullCopy (SnapshotName Src) (FilesystemName Dst)
     | Incremental (SnapshotIdentifier Src) (SnapshotName Src) (FilesystemName Dst)
+
+sameSnapshotOn :: SnapshotName Src -> FilesystemName Dst -> SnapshotName Dst
+srcSnap `sameSnapshotOn` dstFs = SnapshotName dstFs (rehome $ snapshotNameOf srcSnap)
 
 fullify :: CopyPlan -> CopyPlan
 fullify (Incremental _startSnap stopSnap dstFs) = FullCopy stopSnap dstFs
@@ -112,10 +115,10 @@ sendCommand ssh opts start stop recursively = case ssh of
     Nothing   -> ("zfs", sendArgs opts start stop recursively)
     Just spec -> ("ssh", [show spec, "zfs"] ++ sendArgs opts start stop recursively)
 
-recCommand :: Maybe SSHSpec -> FilesystemName Dst -> (String, [String])
-recCommand ssh dstFs = case ssh of
-    Nothing   -> ("zfs", recvArgs dstFs)
-    Just spec -> ("ssh", [show spec, "zfs"] ++ recvArgs dstFs)
+recCommand :: Show (target Dst) => Maybe SSHSpec -> target Dst -> (String, [String])
+recCommand ssh target = case ssh of
+    Nothing   -> ("zfs", ["receive", "-u", show target])
+    Just spec -> ("ssh", [show spec, "zfs", "receive", "-u", show target])
 
 data SendOptions = SendOptions (Should SendCompressed) (Should SendRaw)
     
@@ -130,7 +133,7 @@ formatCommand (cmd, args) = intercalate " " (cmd : args)
 
 showShell :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions ->  Should OperateRecursively -> CopyPlan -> String
 showShell _ _ _ _ CopyNada = "# nothing to do #"
-showShell send rcv opts recursively (FullCopy snap dstFs) = formatCommand (sendCommand send opts Nothing snap recursively) ++ " | pv | " ++ formatCommand (recCommand rcv dstFs)
+showShell send rcv opts recursively (FullCopy snap dstFs) = formatCommand (sendCommand send opts Nothing snap recursively) ++ " | pv | " ++ formatCommand (recCommand rcv (snap `sameSnapshotOn` dstFs))
 showShell send rcv opts recursively (Incremental start stop dstFs)
     = formatCommand (sendCommand send opts (Just start) stop recursively) ++ " | pv | " ++
       formatCommand (recCommand rcv dstFs) ++ "\n"
