@@ -56,5 +56,3 @@ runCommand = do
 
 excluding :: [Regex] -> SnapshotName sys -> Bool
 excluding regexes = \(SnapshotName _fs snap) -> any (identifierOf snap `matches`) regexes
-
-

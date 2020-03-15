@@ -18,12 +18,12 @@ import qualified System.Process.Typed as P
 import           Text.Printf          (printf)
 import           Data.List            (intercalate)
 
-data DeleteError = Couldn'tPlan String deriving (Show, Ex.Exception)
+data DeleteError = Couldn'tPlan String | NoSuchFilesystem deriving (Show, Ex.Exception)
 
 cleanup :: Remotable (FilesystemName sys) -> Maybe Int -> [History] -> Should DryRun -> (SnapshotName sys -> Bool) -> Should OperateRecursively -> IO ()
 cleanup filesystem mostRecent alsoKeep dryRun excluding recursively = do
     let remote = remotable Nothing Just filesystem
-    snaps <- either Ex.throw (return . snapshots) =<< list (Just $ thing filesystem) remote excluding
+    snaps <- either Ex.throw (return . maybe (Ex.throw NoSuchFilesystem) snapshots) =<< list (Just $ thing filesystem) remote excluding
     now <- getCurrentTime
     plan <- either (Ex.throw . Couldn'tPlan) return $ planDeletion now (thing filesystem) (withFS (thing filesystem) snaps) (maybe 0 id mostRecent) alsoKeep
     putStrLn $ prettyDeletePlan plan recursively

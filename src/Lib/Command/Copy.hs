@@ -29,8 +29,8 @@ copy :: Remotable (FilesystemName Src) ->  Remotable (FilesystemName Dst)
 copy src dst sendCompressed sendRaw dryRun excluding recursive sendFull bufferConfig = do
     let srcRemote = remotable Nothing Just src
         dstRemote = remotable Nothing Just dst
-    srcSnaps <- either Ex.throw (return . snapshots) =<< list (Just $ thing src) srcRemote excluding
-    dstSnaps <- either Ex.throw (return . snapshots) =<< list (Just $ thing dst) dstRemote excluding
+    srcSnaps <- either Ex.throw (return . snapshots . maybe [] id) =<< list (Just $ thing src) srcRemote excluding
+    dstSnaps <- either Ex.throw (return . snapshots . maybe [] id) =<< list (Just $ thing dst) dstRemote excluding
     originalPlan <- either Ex.throw return $ copyPlan (thing src) (withFS (thing src) srcSnaps) (thing dst) (withFS (thing dst) dstSnaps)
     plan <- if should @ForceFullSend sendFull 
                 then fullify originalPlan <$ 
@@ -53,6 +53,7 @@ oneStep bufferCfg progress sndProc rcvProc = do
     P.withProcessWait_ rcvProc $ \rcv ->
         P.withProcessWait_ sndProc $ \send -> do
             (writeChan, readChan) <- Chan.newChan (maxSegs bufferCfg)
+            let getBuffered = Buffered <$> Chan.estimatedLength writeChan
             writer <- Async.async $ do
                 let sndHdl = P.getStdout send
                 let go = do
@@ -60,7 +61,9 @@ oneStep bufferCfg progress sndProc rcvProc = do
                         Chan.writeChan writeChan chunk
                         if BS.null chunk
                             then return ()
-                            else go 
+                            else do
+                                progress 0 =<< getBuffered
+                                go 
                 go
             reader <- Async.async $ do
                 let rcvHdl = P.getStdin rcv
@@ -70,8 +73,7 @@ oneStep bufferCfg progress sndProc rcvProc = do
                         if BS.null chunk
                             then hClose rcvHdl
                             else do
-                                buffered <- Buffered <$> Chan.estimatedLength writeChan
-                                progress (BS.length chunk) buffered
+                                progress (BS.length chunk) =<< getBuffered
                                 go
                 go
             ((),()) <- Async.waitBoth reader writer
