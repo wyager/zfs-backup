@@ -25,8 +25,8 @@ defaultBufferConfig = BufferConfig {maxSegs = 16}
 copy :: Remotable (FilesystemName Src) ->  Remotable (FilesystemName Dst) 
      -> Should SendCompressed -> Should SendRaw -> Should DryRun 
      -> (forall sys . SnapshotName sys -> Bool) -> Should OperateRecursively
-     -> Should ForceFullSend -> BufferConfig -> IO ()
-copy src dst sendCompressed sendRaw dryRun excluding recursive sendFull bufferConfig = do
+     -> Should ForceFullSend -> BufferConfig -> Maybe BufferConfig -> IO ()
+copy src dst sendCompressed sendRaw dryRun excluding recursive sendFull bufferConfig remoteBufferCfg = do
     let srcRemote = remotable Nothing Just src
         dstRemote = remotable Nothing Just dst
     srcSnaps <- either Ex.throw (return . snapshots . maybe [] id) =<< list (Just $ thing src) srcRemote excluding
@@ -39,8 +39,8 @@ copy src dst sendCompressed sendRaw dryRun excluding recursive sendFull bufferCo
                               \but that's dangerous so I'm not doing it for you." 
                 else return originalPlan
     if should @DryRun dryRun
-        then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) recursive plan) 
-        else executeCopyPlan srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan recursive bufferConfig
+        then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) recursive remoteBufferCfg plan) 
+        else executeCopyPlan srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan recursive bufferConfig remoteBufferCfg
 
 newtype Buffered = Buffered Int
 instance Show Buffered where
@@ -79,8 +79,8 @@ oneStep bufferCfg progress sndProc rcvProc = do
             ((),()) <- Async.waitBoth reader writer
             return ()
 
-executeCopyPlan :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions -> CopyPlan -> Should OperateRecursively -> BufferConfig -> IO ()
-executeCopyPlan sndSpec rcvSpec sndOpts plan recursive bufferConfig = case plan of
+executeCopyPlan :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions -> CopyPlan -> Should OperateRecursively -> BufferConfig -> Maybe BufferConfig -> IO ()
+executeCopyPlan sndSpec rcvSpec sndOpts plan recursive bufferConfig remoteBufferConfig = case plan of
     CopyNada -> putStrLn "Nothing to do"
     FullCopy snap dstFs -> goWith Nothing snap dstFs
     Incremental start stop dstFs -> goWith (Just start) stop dstFs
@@ -88,8 +88,8 @@ executeCopyPlan sndSpec rcvSpec sndOpts plan recursive bufferConfig = case plan 
     goWith start stop dstFs = do
         let (sndExe,sndArgs) = sendCommand sndSpec sndOpts start stop recursive
         let (rcvExe,rcvArgs) = case start of
-                Nothing -> recCommand rcvSpec (stop `sameSnapshotOn` dstFs)
-                Just _startSnap -> recCommand rcvSpec dstFs -- No need to specify the receiving snapshot name, since we're doing an incremental send
+                Nothing -> recCommand rcvSpec (stop `sameSnapshotOn` dstFs) remoteBufferConfig
+                Just _startSnap -> recCommand rcvSpec dstFs remoteBufferConfig -- No need to specify the receiving snapshot name, since we're doing an incremental send
         let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ P.proc sndExe sndArgs
         let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
         printProgress ("Copying to " ++ show dstFs) (Buffered 0) $ \progress -> oneStep bufferConfig progress sndProc rcvProc
@@ -117,10 +117,12 @@ sendCommand ssh opts start stop recursively = case ssh of
     Nothing   -> ("zfs", sendArgs opts start stop recursively)
     Just spec -> ("ssh", [show spec, "zfs"] ++ sendArgs opts start stop recursively)
 
-recCommand :: Show (target Dst) => Maybe SSHSpec -> target Dst -> (String, [String])
-recCommand ssh target = case ssh of
+recCommand :: Show (target Dst) => Maybe SSHSpec -> target Dst -> Maybe BufferConfig -> (String, [String])
+recCommand ssh target remoteBufferConfig = case ssh of
     Nothing   -> ("zfs", ["receive", "-u", show target])
-    Just spec -> ("ssh", [show spec, "zfs", "receive", "-u", show target])
+    Just spec -> case remoteBufferConfig of 
+        Nothing -> ("ssh", [show spec, "zfs", "receive", "-u", show target])
+        Just (BufferConfig size) -> ("ssh", [show spec, "zfs-backup", "receive", "--receive-to", show target, "--transfer-buffer-count", show size])
 
 data SendOptions = SendOptions (Should SendCompressed) (Should SendRaw)
     
@@ -133,12 +135,12 @@ sendOptArgs (SendOptions compressed raw)  =
 formatCommand :: (String, [String]) -> String
 formatCommand (cmd, args) = intercalate " " (cmd : args)
 
-showShell :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions ->  Should OperateRecursively -> CopyPlan -> String
-showShell _ _ _ _ CopyNada = "# nothing to do #"
-showShell send rcv opts recursively (FullCopy snap dstFs) = formatCommand (sendCommand send opts Nothing snap recursively) ++ " | pv | " ++ formatCommand (recCommand rcv (snap `sameSnapshotOn` dstFs))
-showShell send rcv opts recursively (Incremental start stop dstFs)
+showShell :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions ->  Should OperateRecursively -> Maybe BufferConfig -> CopyPlan -> String
+showShell _ _ _ _ _ CopyNada = "# nothing to do #"
+showShell send rcv opts recursively remoteBufferConfig (FullCopy snap dstFs) = formatCommand (sendCommand send opts Nothing snap recursively) ++ " | pv | " ++ formatCommand (recCommand rcv (snap `sameSnapshotOn` dstFs) remoteBufferConfig)
+showShell send rcv opts recursively remoteBufferConfig (Incremental start stop dstFs)
     = formatCommand (sendCommand send opts (Just start) stop recursively) ++ " | pv | " ++
-      formatCommand (recCommand rcv dstFs) ++ "\n"
+      formatCommand (recCommand rcv dstFs remoteBufferConfig) ++ "\n"
         
 prettyPlan :: CopyPlan -> String
 prettyPlan CopyNada = "Do Nothing"
