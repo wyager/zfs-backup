@@ -4,6 +4,7 @@ import           GHC.Generics    (Generic)
 import           Lib.Command.Copy        (copy,BufferConfig(..),defaultBufferConfig)
 import           Lib.Command.Delete      (cleanup)
 import           Lib.Command.List        (listPrint)
+import           Lib.Command.BufferedReceive (receive) 
 import           Options.Generic (ParseRecord, Wrapped, 
                                   lispCaseModifiers, unwrapRecord,
                                   parseRecord, parseRecordWithModifiers,
@@ -40,6 +41,10 @@ data Command w
         ignoring :: w ::: [Regex] <?> "Ignore snapshots with names matching any of these regexes",
         recursive :: w ::: Should OperateRecursively <?> "Recursive mode. Corresponds to `zfs send -R`, `zfs snapshot -r`, `zfs destroy -r`"
     }
+    | Receive {
+        receiveTo :: w ::: FilesystemName Dst <?> "Can be like \"tank/set\"",
+        transferBufferCount :: w ::: Maybe Int <?> "How many reads/writes to buffer between `zfs send` and `zfs receive`. Useful for bursty sends. Default 16"
+    }
     deriving (Generic)
 
 -- CopySnapshots gets translated to copy-snapshots
@@ -53,6 +58,7 @@ runCommand = do
         List host ignoring   -> listPrint host (excluding ignoring)
         CopySnapshots{..}    -> copy src dst sendCompressed sendRaw dryRun (excluding ignoring) recursive forceFullSend (maybe defaultBufferConfig BufferConfig transferBufferCount)
         CleanupSnapshots{..} -> cleanup filesystem mostRecent alsoKeep dryRun (excluding ignoring) recursive
+        Receive{..}          -> receive receiveTo (maybe defaultBufferConfig BufferConfig transferBufferCount)
 
 excluding :: [Regex] -> SnapshotName sys -> Bool
 excluding regexes = \(SnapshotName _fs snap) -> any (identifierOf snap `matches`) regexes
