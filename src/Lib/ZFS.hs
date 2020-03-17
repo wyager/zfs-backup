@@ -1,6 +1,6 @@
 module Lib.ZFS (
     Size, GUID, ObjectMeta(..), Object(..), 
-    FilesystemName(..), SnapshotIdentifier(..), SnapshotName(..), 
+    FilesystemName(..), SnapshotIdentifier(..), SnapshotName(..), SnapshotOrFilesystemName(..), 
     objects, listShellCmd, listSnapsShellCmd, rehome,
     ObjSet, snapshots, withFS, presentIn, byDate, single, seconds, byGUID) where
 import           Lib.Common            (HasParser, parser, unWithParser)
@@ -18,7 +18,7 @@ import           Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import           Data.Word             (Word64)
 import           GHC.Generics          (Generic)
 import           Options.Generic       (ParseField, ParseFields, ParseRecord,
-                                        readField)
+                                        readField, parseRecord)
 import           Data.Typeable         (Typeable)
 
 newtype Size = Size Word64 deriving newtype (Eq, Ord, Show, Num)
@@ -59,26 +59,44 @@ instance Typeable sys => ParseField (FilesystemName sys) where
     readField = unWithParser <$> readField
 deriving anyclass instance Typeable sys => ParseFields (FilesystemName sys)
 
-newtype SnapshotIdentifier sys = SnapshotIdentifier {identifierOf :: Text} deriving (Eq,Ord)
+newtype SnapshotIdentifier sys = SnapshotIdentifier {identifierOf :: Text} 
+    deriving (Eq,Ord,Generic)
+    deriving anyclass ParseRecord
+instance HasParser (SnapshotIdentifier sys) where
+    parser = SnapshotIdentifier <$> ("@" *> A.takeWhile (not . A.inClass " \t"))
+instance Typeable sys => ParseField (SnapshotIdentifier sys) where
+    readField = unWithParser <$> readField
 instance Show (SnapshotIdentifier sys) where
     show (SnapshotIdentifier ident) = T.unpack ident
-
+deriving anyclass instance Typeable sys => ParseFields (SnapshotIdentifier sys)
 rehome :: SnapshotIdentifier a -> SnapshotIdentifier b
 rehome = SnapshotIdentifier . identifierOf
 
 
-data SnapshotName sys = SnapshotName {snapshotFSOf :: FilesystemName sys, snapshotNameOf :: SnapshotIdentifier sys} deriving (Eq,Ord)
+data SnapshotName sys = SnapshotName {snapshotFSOf :: FilesystemName sys, snapshotNameOf :: SnapshotIdentifier sys} 
+    deriving (Eq,Ord,Generic)
+    deriving anyclass ParseRecord
 instance Show (SnapshotName sys) where
     show (SnapshotName fs snap) = show fs ++ "@" ++ show snap
-
 instance HasParser (SnapshotName sys) where
     parser = do
         snapshotFSOf <- parser
-        snapshotNameOf <- SnapshotIdentifier <$> ("@" *> A.takeWhile (not . A.inClass " \t"))
+        snapshotNameOf <- parser
         return SnapshotName{..}
-
 instance Typeable sys => ParseField (SnapshotName sys) where
     readField = unWithParser <$> readField
+
+data SnapshotOrFilesystemName sys = SFSnapshot (SnapshotName sys) | SFFilesystem (FilesystemName sys)
+instance Show (SnapshotOrFilesystemName sys) where
+    show (SFSnapshot s) = show s
+    show (SFFilesystem f) = show f
+instance HasParser (SnapshotOrFilesystemName sys) where
+    parser = (SFSnapshot <$> parser) <|> (SFFilesystem <$> parser)
+instance Typeable sys => ParseField (SnapshotOrFilesystemName sys) where
+    readField = unWithParser <$> readField
+instance Typeable sys => ParseRecord (SnapshotOrFilesystemName sys) where
+    parseRecord = (SFSnapshot <$> parseRecord) <|> (SFFilesystem <$> parseRecord)
+instance Typeable sys => ParseFields (SnapshotOrFilesystemName sys)
 
 instance HasParser (Object sys) where
     parser = (fs <|> vol <|> snap) <* A.endOfLine

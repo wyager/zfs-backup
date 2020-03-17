@@ -12,7 +12,7 @@ import           Options.Generic (ParseRecord, Wrapped,
 import           Lib.Common      (Remotable, SSHSpec, Src, Dst, 
                                   Should, SendCompressed, SendRaw, DryRun, OperateRecursively, ForceFullSend)
 import           Lib.Units       (History)
-import           Lib.ZFS         (FilesystemName, SnapshotName(..), identifierOf)
+import           Lib.ZFS         (FilesystemName, SnapshotName(..), SnapshotOrFilesystemName, identifierOf)
 import           Lib.Regex       (Regex, matches)
 
 -- The w, (:::), <?> stuff is just
@@ -43,7 +43,7 @@ data Command w
         recursive :: w ::: Should OperateRecursively <?> "Recursive mode. Corresponds to `zfs send -R`, `zfs snapshot -r`, `zfs destroy -r`"
     }
     | Receive {
-        receiveTo :: w ::: FilesystemName Dst <?> "Can be like \"tank/set\"",
+        receiveTo :: w ::: SnapshotOrFilesystemName Dst <?> "Can be like \"tank/set\" or \"tank/set@snap\"",
         transferBufferCount :: w ::: Maybe Int <?> "How many reads/writes to buffer between `zfs send` and `zfs receive`. Useful for bursty sends. Default 16"
     }
     deriving (Generic)
