@@ -202,6 +202,6 @@ copyPlan srcFS src dstFS dst =
 speedTest :: IO ()
 speedTest = printProgress "Speed test" (Buffered 0) $ \update -> do
     let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ "dd bs=1m if=/dev/zero count=10000"
-    let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ "dd bs=1m of=/dev/null"
+    let rcvProc = P.setStdin P.createPipe $ "dd bs=1m of=/dev/null"
     oneStep defaultBufferConfig update sndProc rcvProc
 
