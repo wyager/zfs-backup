@@ -5,19 +5,20 @@ import qualified Data.Attoparsec.Text   as A
 import           Data.ByteString        (ByteString)
 import qualified Data.ByteString.Lazy   as LBS
 import qualified Data.Text.Encoding     as TE
-import           Lib.Common             (SSHSpec)
+import           Lib.Common             (SSHSpec, Should, BeVerbose, should)
 import           Lib.ZFS                (Object, listShellCmd, listSnapsShellCmd, objects, Object(Snapshot), SnapshotName, FilesystemName)
 import           System.Exit            (ExitCode (ExitFailure, ExitSuccess))
 import qualified System.Process.Typed   as P
 import           Text.Regex.TDFA ((=~))
+import           Control.Monad          (when)
 
 data ListError = CommandError ByteString | ZFSListParseError String deriving (Show, Ex.Exception)
 
-listPrint :: Maybe SSHSpec -> (SnapshotName sys -> Bool) -> IO ()
-listPrint host excluding = list Nothing host excluding >>= either Ex.throw (mapM_ print)
+listPrint :: Should BeVerbose -> Maybe SSHSpec -> (SnapshotName sys -> Bool) -> IO ()
+listPrint verbose host excluding = list verbose Nothing host excluding >>= either Ex.throw (mapM_ print)
 
-list :: Maybe (FilesystemName sys) -> Maybe SSHSpec -> (SnapshotName sys -> Bool) -> IO (Either ListError (Maybe [Object sys]))
-list fs host excluding = listWith excluding $ case host of 
+list :: Should BeVerbose -> Maybe (FilesystemName sys) -> Maybe SSHSpec -> (SnapshotName sys -> Bool) -> IO (Either ListError (Maybe [Object sys]))
+list verbose fs host excluding = listWith verbose excluding $ case host of 
     Nothing -> localCmd fs
     Just spec -> sshCmd spec fs
 
@@ -27,9 +28,11 @@ filterWith excluding = filter (not . excluded)
     excluded (Snapshot snap _meta) = excluding snap
     excluded _ = False 
 
-listWith :: forall sys . (SnapshotName sys -> Bool) -> P.ProcessConfig () () () -> IO (Either ListError (Maybe [Object sys]))
-listWith excluding cmd = do
-    output <- P.withProcessWait (allOutputs cmd) $ \proc -> do
+listWith :: forall sys . Should BeVerbose -> (SnapshotName sys -> Bool) -> P.ProcessConfig () () () -> IO (Either ListError (Maybe [Object sys]))
+listWith verbose excluding cmd = do
+    let cmd' = allOutputs cmd 
+    when (should @BeVerbose verbose) $ print cmd'
+    output <- P.withProcessWait cmd' $ \proc -> do
         output <- fmap (TE.decodeUtf8 . LBS.toStrict) $ atomically $ P.getStdout proc
         err <- fmap LBS.toStrict $ atomically $ P.getStderr proc
         P.waitExitCode proc >>= \case

@@ -1,6 +1,6 @@
 module Lib.Command.BufferedReceive (receive) where
 import qualified Data.ByteString.Char8 as BS
-import           Lib.Common            (Dst)
+import           Lib.Common            (Dst, Should, BeVerbose, should)
 import           Lib.Command.Copy      (BufferConfig(..))
 import           Lib.ZFS               (SnapshotOrFilesystemName)
 import           System.IO             (Handle, hClose, stdin)
@@ -8,13 +8,15 @@ import qualified System.Process.Typed  as P
 import qualified Control.Concurrent.Async as Async
 import qualified Control.Concurrent.Chan.Unagi.Bounded as Chan
 import           Control.Concurrent (threadDelay)
+import           Control.Monad (when)
 
 
 
-receive :: SnapshotOrFilesystemName Dst -> BufferConfig -> IO ()
-receive dst bufferConfig = do
+receive :: Should BeVerbose -> SnapshotOrFilesystemName Dst -> BufferConfig -> IO ()
+receive verbose dst bufferConfig = do
     let (rcvExe,rcvArgs) = recCommand dst
     let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
+    when (should @BeVerbose verbose) $ print rcvProc
     run bufferConfig rcvProc
 
 

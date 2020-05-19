@@ -4,7 +4,8 @@ module Lib.Common(
     Host(..), SSHSpec(..), Remotable(..), 
     thing, remotable, Src, Dst, Should, 
     should, SendCompressed, SendRaw, 
-    DryRun, OperateRecursively, ForceFullSend) where
+    DryRun, OperateRecursively, ForceFullSend,
+    BeVerbose, yes) where
 
 import           Control.Applicative  ((<|>))
 import qualified Data.Attoparsec.Text as A
@@ -22,6 +23,9 @@ import           Options.Generic      (Only (fromOnly), ParseField, ParseFields,
 data Dst
 data Src
 
+yes :: forall a . Should a
+yes = Should True
+
 newtype Should a = Should {should :: Bool}
 instance ParseFields (Should a) where
     parseFields m l n = Should <$> parseFields m l n
@@ -33,6 +37,7 @@ data SendRaw
 data DryRun
 data OperateRecursively
 data ForceFullSend
+data BeVerbose
 
 
 class HasParser a where

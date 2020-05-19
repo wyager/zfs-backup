@@ -4,9 +4,9 @@ import           Control.Monad         (when)
 import qualified Data.ByteString.Char8 as BS
 import           Data.List             (intercalate)
 import qualified Data.Map.Strict       as Map
-import           Lib.Common            (Remotable, SSHSpec, remotable, thing, Src, Dst,
+import           Lib.Common            (Remotable, SSHSpec, remotable, thing, yes, Src, Dst,
                                         Should, should, SendCompressed, SendRaw, 
-                                        DryRun, OperateRecursively, ForceFullSend)
+                                        DryRun, OperateRecursively, ForceFullSend, BeVerbose)
 import           Lib.Command.List      (list)
 import           Lib.Progress          (printProgress)
 import           Lib.ZFS               (FilesystemName, ObjSet,
@@ -23,14 +23,14 @@ defaultBufferConfig :: BufferConfig
 defaultBufferConfig = BufferConfig {maxSegs = 16} 
 
 copy :: Remotable (FilesystemName Src) ->  Remotable (FilesystemName Dst) 
-     -> Should SendCompressed -> Should SendRaw -> Should DryRun 
+     -> Should SendCompressed -> Should SendRaw -> Should DryRun -> Should BeVerbose
      -> (forall sys . SnapshotName sys -> Bool) -> Should OperateRecursively
      -> Should ForceFullSend -> BufferConfig -> Maybe BufferConfig -> IO ()
-copy src dst sendCompressed sendRaw dryRun excluding recursive sendFull bufferConfig remoteBufferCfg = do
+copy src dst sendCompressed sendRaw dryRun verbose excluding recursive sendFull bufferConfig remoteBufferCfg = do
     let srcRemote = remotable Nothing Just src
         dstRemote = remotable Nothing Just dst
-    srcSnaps <- either Ex.throw (return . snapshots . maybe [] id) =<< list (Just $ thing src) srcRemote excluding
-    dstSnaps <- either Ex.throw (return . snapshots . maybe [] id) =<< list (Just $ thing dst) dstRemote excluding
+    srcSnaps <- either Ex.throw (return . snapshots . maybe [] id) =<< list verbose (Just $ thing src) srcRemote excluding
+    dstSnaps <- either Ex.throw (return . snapshots . maybe [] id) =<< list verbose (Just $ thing dst) dstRemote excluding
     originalPlan <- either Ex.throw return $ copyPlan (thing src) (withFS (thing src) srcSnaps) (thing dst) (withFS (thing dst) dstSnaps)
     plan <- if should @ForceFullSend sendFull 
                 then fullify originalPlan <$ 
@@ -40,16 +40,16 @@ copy src dst sendCompressed sendRaw dryRun excluding recursive sendFull bufferCo
                 else return originalPlan
     if should @DryRun dryRun
         then putStrLn (showShell srcRemote dstRemote (SendOptions sendCompressed sendRaw) recursive remoteBufferCfg plan) 
-        else executeCopyPlan srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan recursive bufferConfig remoteBufferCfg
+        else executeCopyPlan verbose srcRemote dstRemote (SendOptions sendCompressed sendRaw) plan recursive bufferConfig remoteBufferCfg
 
 newtype Buffered = Buffered Int
 instance Show Buffered where
     show (Buffered i) = "Bufferred writes: ~" ++ show i
 
-oneStep :: BufferConfig -> (Int -> Buffered -> IO ()) -> P.ProcessConfig () Handle () ->  P.ProcessConfig Handle () () -> IO ()
-oneStep bufferCfg progress sndProc rcvProc = do
-    print sndProc
-    print rcvProc
+oneStep :: Should BeVerbose -> BufferConfig -> (Int -> Buffered -> IO ()) -> P.ProcessConfig () Handle () ->  P.ProcessConfig Handle () () -> IO ()
+oneStep verbose bufferCfg progress sndProc rcvProc = do
+    when (should @BeVerbose verbose) $ print sndProc
+    when (should @BeVerbose verbose) $ print rcvProc
     P.withProcessWait_ rcvProc $ \rcv ->
         P.withProcessWait_ sndProc $ \send -> do
             (writeChan, readChan) <- Chan.newChan (maxSegs bufferCfg)
@@ -79,8 +79,8 @@ oneStep bufferCfg progress sndProc rcvProc = do
             ((),()) <- Async.waitBoth reader writer
             return ()
 
-executeCopyPlan :: Maybe SSHSpec -> Maybe SSHSpec -> SendOptions -> CopyPlan -> Should OperateRecursively -> BufferConfig -> Maybe BufferConfig -> IO ()
-executeCopyPlan sndSpec rcvSpec sndOpts plan recursive bufferConfig remoteBufferConfig = case plan of
+executeCopyPlan :: Should BeVerbose -> Maybe SSHSpec -> Maybe SSHSpec -> SendOptions -> CopyPlan -> Should OperateRecursively -> BufferConfig -> Maybe BufferConfig -> IO ()
+executeCopyPlan verbose sndSpec rcvSpec sndOpts plan recursive bufferConfig remoteBufferConfig = case plan of
     CopyNada -> putStrLn "Nothing to do"
     FullCopy snap dstFs -> goWith Nothing snap dstFs
     Incremental start stop dstFs -> goWith (Just start) stop dstFs
@@ -92,7 +92,7 @@ executeCopyPlan sndSpec rcvSpec sndOpts plan recursive bufferConfig remoteBuffer
                 Just _startSnap -> recCommand rcvSpec dstFs remoteBufferConfig -- No need to specify the receiving snapshot name, since we're doing an incremental send
         let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ P.proc sndExe sndArgs
         let rcvProc = P.setStdout P.closed $ P.setStdin P.createPipe $ P.proc rcvExe rcvArgs
-        printProgress ("Copying to " ++ show dstFs) (Buffered 0) $ \progress -> oneStep bufferConfig progress sndProc rcvProc
+        printProgress ("Copying to " ++ show dstFs) (Buffered 0) $ \progress -> oneStep verbose bufferConfig progress sndProc rcvProc
 
 sendArgs :: SendOptions -> Maybe (SnapshotIdentifier Src) -> SnapshotName Src -> Should OperateRecursively -> [String]
 sendArgs opts start stop recursively = ["send"] ++ sendOptArgs opts ++ (if should @OperateRecursively recursively then ["-R"] else []) ++ case start of
@@ -203,5 +203,5 @@ speedTest :: IO ()
 speedTest = printProgress "Speed test" (Buffered 0) $ \update -> do
     let sndProc = P.setStdin P.closed $ P.setStdout P.createPipe $ "dd bs=1m if=/dev/zero count=10000"
     let rcvProc = P.setStdin P.createPipe $ "dd bs=1m of=/dev/null"
-    oneStep defaultBufferConfig update sndProc rcvProc
+    oneStep (yes @BeVerbose) defaultBufferConfig update sndProc rcvProc
 
