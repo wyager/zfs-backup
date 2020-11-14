@@ -61,8 +61,8 @@ listWith verbose excluding cmd = do
 
 dontIncludeFsNameOnFreebsd :: Should UseFreeBSDMode -> a -> Maybe a
 dontIncludeFsNameOnFreebsd freebsd fsName = if should @UseFreeBSDMode freebsd
-    then Just fsName
-    else Nothing
+    then Nothing
+    else Just fsName
 
 localCmd :: Should UseFreeBSDMode -> Maybe (FilesystemName sys) -> P.ProcessConfig () () ()
 localCmd freebsd = maybe (P.shell listShellCmd) (P.shell . listSnapsShellCmd . dontIncludeFsNameOnFreebsd freebsd) 
