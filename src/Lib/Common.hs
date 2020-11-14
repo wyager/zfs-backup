@@ -5,7 +5,7 @@ module Lib.Common(
     thing, remotable, Src, Dst, Should, 
     should, SendCompressed, SendRaw, 
     DryRun, OperateRecursively, ForceFullSend,
-    BeVerbose, yes) where
+    BeVerbose, UseFreeBSDMode, yes) where
 
 import           Control.Applicative  ((<|>))
 import qualified Data.Attoparsec.Text as A
@@ -38,6 +38,7 @@ data DryRun
 data OperateRecursively
 data ForceFullSend
 data BeVerbose
+data UseFreeBSDMode
 
 
 class HasParser a where

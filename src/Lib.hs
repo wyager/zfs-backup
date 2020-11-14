@@ -10,7 +10,8 @@ import           Options.Generic (ParseRecord, Wrapped,
                                   parseRecord, parseRecordWithModifiers,
                                   type (:::), type (<?>))
 import           Lib.Common      (Remotable, SSHSpec, Src, Dst, 
-                                  Should, SendCompressed, SendRaw, DryRun, OperateRecursively, ForceFullSend, BeVerbose)
+                                  Should, SendCompressed, SendRaw, DryRun, OperateRecursively, 
+                                  ForceFullSend, BeVerbose, UseFreeBSDMode)
 import           Lib.Units       (History)
 import           Lib.ZFS         (FilesystemName, SnapshotName(..), SnapshotOrFilesystemName, identifierOf)
 import           Lib.Regex       (Regex, matches)
@@ -21,7 +22,8 @@ data Command w
     = List {
         remote :: w ::: Maybe SSHSpec <?> "Remote host to list on",
         ignoring :: w ::: [Regex] <?> "Ignore snapshots with names matching any of these regexes",
-        verbose :: w ::: Should BeVerbose <?> "Verbose mode. Prints shell commands."
+        verbose :: w ::: Should BeVerbose <?> "Verbose mode. Prints shell commands.",
+        freebsdMode :: w ::: Should UseFreeBSDMode <?> "FreeBSD compatible mode. Slightly less efficient listing of snapshots."
     }
     | CopySnapshots {
         src :: w ::: Remotable (FilesystemName Src) <?> "Can be \"tank/set\" or \"user@host:tank/set\"",
@@ -34,7 +36,8 @@ data Command w
         forceFullSend :: w ::: Should ForceFullSend <?> "Send a full snapshot, even if an incremental snapshot could be sent",
         transferBufferCount :: w ::: Maybe Int <?> "How many reads/writes to buffer between `zfs send` and `zfs receive`. Useful for bursty sends. Default 16",
         remoteBufferCount :: w ::: Maybe Int <?> "How many 2^16-byte reads to buffer on the receiving end. Requires zfs-backup to be installed there.",
-        verbose :: w ::: Should BeVerbose <?> "Verbose mode. Prints shell commands."
+        verbose :: w ::: Should BeVerbose <?> "Verbose mode. Prints shell commands.",
+        freebsdMode :: w ::: Should UseFreeBSDMode <?> "FreeBSD compatible mode. Slightly less efficient listing of snapshots."
 
     }
     | CleanupSnapshots {
@@ -44,7 +47,8 @@ data Command w
         dryRun :: w ::: Should DryRun <?> "Don't actually do anything, just print what's going to happen",
         ignoring :: w ::: [Regex] <?> "Ignore snapshots with names matching any of these regexes",
         recursive :: w ::: Should OperateRecursively <?> "Recursive mode. Corresponds to `zfs send -R`, `zfs snapshot -r`, `zfs destroy -r`",
-        verbose :: w ::: Should BeVerbose <?> "Verbose mode. Prints shell commands."
+        verbose :: w ::: Should BeVerbose <?> "Verbose mode. Prints shell commands.",
+        freebsdMode :: w ::: Should UseFreeBSDMode <?> "FreeBSD compatible mode. Slightly less efficient listing of snapshots."
     }
     | Receive {
         receiveTo :: w ::: SnapshotOrFilesystemName Dst <?> "Can be like \"tank/set\" or \"tank/set@snap\"",
@@ -62,9 +66,9 @@ runCommand :: IO ()
 runCommand = do
     command <- unwrapRecord "ZFS Backup Tool"
     case command of
-        List host ignoring verbose   -> listPrint verbose host (excluding ignoring) 
-        CopySnapshots{..}    -> copy src dst sendCompressed sendRaw dryRun verbose (excluding ignoring) recursive forceFullSend (maybe defaultBufferConfig BufferConfig transferBufferCount) (BufferConfig <$> remoteBufferCount)
-        CleanupSnapshots{..} -> cleanup filesystem mostRecent alsoKeep dryRun (excluding ignoring) recursive verbose
+        List {..} -> listPrint verbose remote (excluding ignoring) freebsdMode
+        CopySnapshots{..}    -> copy src dst sendCompressed sendRaw dryRun verbose (excluding ignoring) recursive forceFullSend (maybe defaultBufferConfig BufferConfig transferBufferCount) (BufferConfig <$> remoteBufferCount) freebsdMode
+        CleanupSnapshots{..} -> cleanup filesystem mostRecent alsoKeep dryRun (excluding ignoring) recursive verbose freebsdMode
         Receive{..}          -> receive verbose receiveTo (maybe defaultBufferConfig BufferConfig transferBufferCount)
 
 excluding :: [Regex] -> SnapshotName sys -> Bool

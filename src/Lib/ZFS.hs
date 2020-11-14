@@ -117,8 +117,11 @@ seconds = posixSecondsToUTCTime . fromIntegral
 listShellCmd :: String
 listShellCmd = "zfs list -Hp -t all -o type,name,creation,guid,referenced,used"
 
-listSnapsShellCmd :: FilesystemName sys -> String
-listSnapsShellCmd  fs = "zfs list -Hp -t snapshot -o type,name,creation,guid,referenced,used " ++ show fs
+listSnapsShellCmd :: Maybe (FilesystemName sys) -> String
+listSnapsShellCmd  fs = "zfs list -Hp -t snapshot -o type,name,creation,guid,referenced,used" ++ 
+    case fs of
+        Nothing -> ""
+        Just theFS -> " " ++ show theFS
 
 
 newtype ObjSet name = ObjSet {getSnapSet :: Map GUID (Map name ObjectMeta)} deriving (Show)

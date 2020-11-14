@@ -5,8 +5,8 @@ import qualified Data.Attoparsec.Text   as A
 import           Data.ByteString        (ByteString)
 import qualified Data.ByteString.Lazy   as LBS
 import qualified Data.Text.Encoding     as TE
-import           Lib.Common             (SSHSpec, Should, BeVerbose, should)
-import           Lib.ZFS                (Object, listShellCmd, listSnapsShellCmd, objects, Object(Snapshot), SnapshotName, FilesystemName)
+import           Lib.Common             (SSHSpec, Should, BeVerbose, UseFreeBSDMode, should)
+import           Lib.ZFS                (Object, listShellCmd, listSnapsShellCmd, objects, Object(Snapshot), SnapshotName, FilesystemName, snapshotFSOf)
 import           System.Exit            (ExitCode (ExitFailure, ExitSuccess))
 import qualified System.Process.Typed   as P
 import           Text.Regex.TDFA ((=~))
@@ -14,13 +14,22 @@ import           Control.Monad          (when)
 
 data ListError = CommandError ByteString | ZFSListParseError String deriving (Show, Ex.Exception)
 
-listPrint :: Should BeVerbose -> Maybe SSHSpec -> (SnapshotName sys -> Bool) -> IO ()
-listPrint verbose host excluding = list verbose Nothing host excluding >>= either Ex.throw (mapM_ print)
+listPrint ::  Should BeVerbose -> Maybe SSHSpec -> (SnapshotName sys -> Bool) -> Should UseFreeBSDMode -> IO ()
+listPrint verbose host excluding freebsd = list verbose Nothing host excluding freebsd >>= either Ex.throw (mapM_ print)
 
-list :: Should BeVerbose -> Maybe (FilesystemName sys) -> Maybe SSHSpec -> (SnapshotName sys -> Bool) -> IO (Either ListError (Maybe [Object sys]))
-list verbose fs host excluding = listWith verbose excluding $ case host of 
-    Nothing -> localCmd fs
-    Just spec -> sshCmd spec fs
+list :: Should BeVerbose -> Maybe (FilesystemName sys) -> Maybe SSHSpec -> (SnapshotName sys -> Bool) -> Should UseFreeBSDMode -> IO (Either ListError (Maybe [Object sys]))
+list verbose fs host excluding freebsd = listWith verbose excluding' $ case host of 
+    Nothing -> localCmd freebsd fs
+    Just spec -> sshCmd freebsd spec fs
+    where
+    fsMatches name = case fs of 
+        Just filesystem -> snapshotFSOf name == filesystem
+        Nothing -> True
+    -- If we're using freebsd, we have to filter by fs name ourselves
+    excluding' name = 
+        if should @UseFreeBSDMode freebsd 
+            then excluding name || not (fsMatches name)
+            else excluding name
 
 filterWith :: (SnapshotName sys -> Bool) -> [Object sys] -> [Object sys]
 filterWith excluding = filter (not . excluded)
@@ -50,11 +59,16 @@ listWith verbose excluding cmd = do
     return result
 
 
-localCmd :: Maybe (FilesystemName sys) -> P.ProcessConfig () () ()
-localCmd = maybe (P.shell listShellCmd) (P.shell . listSnapsShellCmd) 
+dontIncludeFsNameOnFreebsd :: Should UseFreeBSDMode -> a -> Maybe a
+dontIncludeFsNameOnFreebsd freebsd fsName = if should @UseFreeBSDMode freebsd
+    then Just fsName
+    else Nothing
 
-sshCmd :: SSHSpec -> Maybe (FilesystemName sys) -> P.ProcessConfig () () ()
-sshCmd spec fs = maybe (shell listShellCmd) (shell . listSnapsShellCmd) fs
+localCmd :: Should UseFreeBSDMode -> Maybe (FilesystemName sys) -> P.ProcessConfig () () ()
+localCmd freebsd = maybe (P.shell listShellCmd) (P.shell . listSnapsShellCmd . dontIncludeFsNameOnFreebsd freebsd) 
+
+sshCmd :: Should UseFreeBSDMode -> SSHSpec -> Maybe (FilesystemName sys) -> P.ProcessConfig () () ()
+sshCmd freebsd spec fs = maybe (shell listShellCmd) (shell . listSnapsShellCmd . dontIncludeFsNameOnFreebsd freebsd) fs
     where
     shell = P.shell . (\cmd -> "ssh " ++ show spec ++ " " ++ cmd)
 

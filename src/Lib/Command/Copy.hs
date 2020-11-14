@@ -6,7 +6,8 @@ import           Data.List             (intercalate)
 import qualified Data.Map.Strict       as Map
 import           Lib.Common            (Remotable, SSHSpec, remotable, thing, yes, Src, Dst,
                                         Should, should, SendCompressed, SendRaw, 
-                                        DryRun, OperateRecursively, ForceFullSend, BeVerbose)
+                                        DryRun, OperateRecursively, ForceFullSend, BeVerbose,
+                                        UseFreeBSDMode)
 import           Lib.Command.List      (list)
 import           Lib.Progress          (printProgress)
 import           Lib.ZFS               (FilesystemName, ObjSet,
@@ -25,12 +26,12 @@ defaultBufferConfig = BufferConfig {maxSegs = 16}
 copy :: Remotable (FilesystemName Src) ->  Remotable (FilesystemName Dst) 
      -> Should SendCompressed -> Should SendRaw -> Should DryRun -> Should BeVerbose
      -> (forall sys . SnapshotName sys -> Bool) -> Should OperateRecursively
-     -> Should ForceFullSend -> BufferConfig -> Maybe BufferConfig -> IO ()
-copy src dst sendCompressed sendRaw dryRun verbose excluding recursive sendFull bufferConfig remoteBufferCfg = do
+     -> Should ForceFullSend -> BufferConfig -> Maybe BufferConfig -> Should UseFreeBSDMode -> IO ()
+copy src dst sendCompressed sendRaw dryRun verbose excluding recursive sendFull bufferConfig remoteBufferCfg freebsd = do
     let srcRemote = remotable Nothing Just src
         dstRemote = remotable Nothing Just dst
-    srcSnaps <- either Ex.throw (return . snapshots . maybe [] id) =<< list verbose (Just $ thing src) srcRemote excluding
-    dstSnaps <- either Ex.throw (return . snapshots . maybe [] id) =<< list verbose (Just $ thing dst) dstRemote excluding
+    srcSnaps <- either Ex.throw (return . snapshots . maybe [] id) =<< list verbose (Just $ thing src) srcRemote excluding freebsd
+    dstSnaps <- either Ex.throw (return . snapshots . maybe [] id) =<< list verbose (Just $ thing dst) dstRemote excluding freebsd
     originalPlan <- either Ex.throw return $ copyPlan (thing src) (withFS (thing src) srcSnaps) (thing dst) (withFS (thing dst) dstSnaps)
     plan <- if should @ForceFullSend sendFull 
                 then fullify originalPlan <$ 
